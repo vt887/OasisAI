@@ -78,4 +78,4 @@ class CodeChunker:
 
 def _make_id(repo: str, file_path: str, chunk_index: int) -> str:
     raw = f"{repo}::{file_path}::{chunk_index}"
-    return hashlib.md5(raw.encode()).hexdigest()  # noqa: S324 (non-security use)
+    return hashlib.md5(raw.encode()).hexdigest()  # noqa: S303 (non-security use)

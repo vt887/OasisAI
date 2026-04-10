@@ -153,25 +153,40 @@ def _format_context(results: list[dict]) -> str:
 
 
 def _parse_plan_and_patches(text: str) -> tuple[str, list[str]]:
-    """Split LLM output into (plan_text, list_of_diff_strings)."""
+    """Split LLM output into (plan_text, list_of_diff_strings).
+
+    A unified diff block is identified by consecutive ``--- `` / ``+++ ``
+    header lines, which avoids false positives from comment lines or code
+    that contains ``--- `` at the start.
+    """
     patches: list[str] = []
     plan_lines: list[str] = []
     current_patch: list[str] = []
     in_patch = False
+    lines = text.splitlines()
 
-    for line in text.splitlines():
-        if line.startswith("--- ") and not in_patch:
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # Only start a patch block when we see a proper diff header pair
+        if (
+            not in_patch
+            and line.startswith("--- ")
+            and i + 1 < len(lines)
+            and lines[i + 1].startswith("+++ ")
+        ):
             in_patch = True
             current_patch = [line]
         elif in_patch:
             current_patch.append(line)
-            # Heuristic: a blank line after content closes the patch block
-            if line == "" and len(current_patch) > 3:
+            # A blank line after at least one hunk line closes the patch block
+            if line == "" and len(current_patch) > 4:
                 patches.append("\n".join(current_patch))
                 current_patch = []
                 in_patch = False
         else:
             plan_lines.append(line)
+        i += 1
 
     if current_patch:
         patches.append("\n".join(current_patch))

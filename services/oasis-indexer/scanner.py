@@ -22,8 +22,8 @@ _EXT_LANG: dict[str, str] = {
     ".cpp": "cpp",
     ".cc": "cpp",
     ".cxx": "cpp",
-    ".c": "cpp",
-    ".h": "cpp",
+    ".c": "c",
+    ".h": "c",
     ".hpp": "cpp",
 }
 
@@ -58,7 +58,13 @@ class RepoScanner:
                 suffix = Path(fname).suffix.lower()
                 lang = _EXT_LANG.get(suffix)
                 if lang:
-                    full_path = Path(dirpath) / fname
+                    full_path = (Path(dirpath) / fname).resolve()
+                    # Guard against symlink escapes: only index files within the root
+                    try:
+                        full_path.relative_to(self._root)
+                    except ValueError:
+                        logger.warning("Skipping file outside root: %s", full_path)
+                        continue
                     results.append((full_path, lang))
         logger.info("Scanned %s: found %d source files", self._root, len(results))
         return results

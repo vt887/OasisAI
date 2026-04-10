@@ -37,6 +37,9 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    # Note: the official ollama image runs as root by default.
+    # For production deployments, consider running behind a reverse proxy
+    # with network-level restrictions to limit access to trusted services only.
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
       interval: 15s
