@@ -1,0 +1,152 @@
+version: "3.9"
+
+# ============================================================
+# OasisAI — full local stack
+# ============================================================
+# Services:
+#   chroma        → ChromaDB vector store       (port 8010)
+#   ollama        → Local LLM + embeddings      (port 11434)
+#   oasis-llm     → LLM wrapper service         (port 8001)
+#   oasis-indexer → Repo ingestion pipeline     (port 8002)
+#   oasis-graph   → AST code graph              (port 8003)
+#   oasis-agent   → Refactor reasoning engine   (port 8004)
+#   oasis-gateway → Public REST API             (port 8000)
+# ============================================================
+
+services:
+  # ----------------------------------------------------------
+  # Infrastructure
+  # ----------------------------------------------------------
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8010:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - ANONYMIZED_TELEMETRY=false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ----------------------------------------------------------
+  # OasisAI services
+  # ----------------------------------------------------------
+  oasis-llm:
+    build:
+      context: ../services/oasis-llm
+    ports:
+      - "8001:8001"
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      - LLM_MODEL=codellama
+      - EMBED_MODEL=nomic-embed-text
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  oasis-indexer:
+    build:
+      context: ../services/oasis-indexer
+    ports:
+      - "8002:8002"
+    environment:
+      - LLM_URL=http://oasis-llm:8001
+      - CHROMA_URL=http://chroma:8000
+      - EMBED_MODEL=nomic-embed-text
+    volumes:
+      - ../repos:/repos:ro
+    depends_on:
+      chroma:
+        condition: service_healthy
+      oasis-llm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  oasis-graph:
+    build:
+      context: ../services/oasis-graph
+    ports:
+      - "8003:8003"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  oasis-agent:
+    build:
+      context: ../services/oasis-agent
+    ports:
+      - "8004:8004"
+    environment:
+      - CHROMA_SEARCH_URL=http://oasis-gateway:8000/search
+      - GRAPH_URL=http://oasis-graph:8003/graph
+      - LLM_URL=http://oasis-llm:8001/generate
+      - LLM_MODEL=codellama
+    depends_on:
+      oasis-llm:
+        condition: service_healthy
+      oasis-graph:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  oasis-gateway:
+    build:
+      context: ../services/oasis-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - INDEXER_URL=http://oasis-indexer:8002
+      - AGENT_URL=http://oasis-agent:8004
+      - GRAPH_URL=http://oasis-graph:8003
+      - LLM_URL=http://oasis-llm:8001
+      - CHROMA_URL=http://chroma:8000
+    depends_on:
+      oasis-indexer:
+        condition: service_healthy
+      oasis-agent:
+        condition: service_healthy
+      oasis-graph:
+        condition: service_healthy
+      oasis-llm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# ----------------------------------------------------------
+# Volumes
+# ----------------------------------------------------------
+volumes:
+  chroma_data:
+  ollama_data:
