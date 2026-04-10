@@ -33,7 +33,7 @@ htmlcov/
 Thumbs.db
 
 # Docker volumes / data
-docker/data/
+compose/data/
 *.log
 
 # Repos ingested at runtime

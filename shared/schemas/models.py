@@ -1,4 +1,5 @@
 """Pydantic models shared across all OasisAI services."""
+
 from __future__ import annotations
 
 from enum import Enum
@@ -6,10 +7,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
+
 
 class Language(str, Enum):
     PYTHON = "python"
@@ -33,9 +34,12 @@ class NodeKind(str, Enum):
 # Indexer / Chunk models
 # ---------------------------------------------------------------------------
 
+
 class ChunkMetadata(BaseModel):
     repo: str = Field(..., description="Repository name or path")
-    file_path: str = Field(..., description="Relative file path within the repo")
+    file_path: str = Field(
+        ..., description="Relative file path within the repo"
+    )
     language: Language = Language.UNKNOWN
     start_line: int = Field(0, ge=0)
     end_line: int = Field(0, ge=0)
@@ -52,7 +56,9 @@ class CodeChunk(BaseModel):
 
 
 class IndexRequest(BaseModel):
-    repo_path: str = Field(..., description="Absolute path to the git repository")
+    repo_path: str = Field(
+        ..., description="Absolute path to the git repository"
+    )
     repo_name: str = Field(..., description="Logical name for the repository")
 
 
@@ -66,9 +72,12 @@ class IndexResponse(BaseModel):
 # Search models
 # ---------------------------------------------------------------------------
 
+
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1)
-    repo: str | None = Field(None, description="Limit search to a specific repo")
+    repo: str | None = Field(
+        None, description="Limit search to a specific repo"
+    )
     top_k: int = Field(5, ge=1, le=50)
 
 
@@ -76,12 +85,15 @@ class SearchResult(BaseModel):
     chunk_id: str
     content: str
     metadata: ChunkMetadata
-    score: float = Field(..., description="Similarity score (higher is better)")
+    score: float = Field(
+        ..., description="Similarity score (higher is better)"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Ask / Agent models
 # ---------------------------------------------------------------------------
+
 
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=1)
@@ -98,15 +110,22 @@ class AskResponse(BaseModel):
 # Refactor models
 # ---------------------------------------------------------------------------
 
+
 class RefactorRequest(BaseModel):
-    instruction: str = Field(..., min_length=1, description="Natural language refactor goal")
+    instruction: str = Field(
+        ..., min_length=1, description="Natural language refactor goal"
+    )
     repo: str | None = None
-    target_file: str | None = Field(None, description="Specific file to refactor")
+    target_file: str | None = Field(
+        None, description="Specific file to refactor"
+    )
     top_k: int = Field(5, ge=1, le=50)
 
 
 class RefactorResponse(BaseModel):
-    plan: str = Field(..., description="Textual description of the refactor plan")
+    plan: str = Field(
+        ..., description="Textual description of the refactor plan"
+    )
     patches: list[str] = Field(
         default_factory=list, description="Unified diff patches (read-only)"
     )
@@ -117,8 +136,11 @@ class RefactorResponse(BaseModel):
 # Graph models
 # ---------------------------------------------------------------------------
 
+
 class GraphNode(BaseModel):
-    id: str = Field(..., description="Unique node ID (e.g., module::ClassName)")
+    id: str = Field(
+        ..., description="Unique node ID (e.g., module::ClassName)"
+    )
     kind: NodeKind
     name: str
     file_path: str
@@ -130,7 +152,9 @@ class GraphNode(BaseModel):
 class GraphEdge(BaseModel):
     source: str = Field(..., description="Source node ID")
     target: str = Field(..., description="Target node ID")
-    relation: str = Field(..., description="e.g. 'calls', 'imports', 'inherits'")
+    relation: str = Field(
+        ..., description="e.g. 'calls', 'imports', 'inherits'"
+    )
 
 
 class CodeGraph(BaseModel):
@@ -141,6 +165,7 @@ class CodeGraph(BaseModel):
 # ---------------------------------------------------------------------------
 # LLM models
 # ---------------------------------------------------------------------------
+
 
 class EmbeddingRequest(BaseModel):
     text: str

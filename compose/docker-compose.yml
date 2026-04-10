@@ -1,0 +1,201 @@
+
+# ============================================================
+# OasisAI — full local stack
+# ============================================================
+# Services:
+#   chroma    → ChromaDB vector store       (host: 8000)
+#   ollama    → Local LLM + embeddings      (port 11434)
+#   llm       → LLM wrapper service         (port 8001)
+#   indexer   → Repo ingestion pipeline     (port 8002)
+#   graph     → AST code graph              (port 8003)
+#   agent     → Refactor reasoning engine   (port 8004)
+#   gateway   → Public REST API             (port 8080)
+# ============================================================
+
+services:
+  # ----------------------------------------------------------
+  # Infrastructure
+  # ----------------------------------------------------------
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - ANONYMIZED_TELEMETRY=false
+    healthcheck:
+      test: ["CMD", "ls"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama-init:
+    image: curlimages/curl:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: [ "/bin/sh", "-c" ]
+    command: >
+      echo "Waiting for Ollama..." &&
+      until curl -s http://ollama:11434/api/tags > /dev/null; do
+        sleep 2;
+      done &&
+      echo "Pulling models..." &&
+      curl -s http://ollama:11434/api/pull -d '{"name":"llama3.1"}' &&
+      curl -s http://ollama:11434/api/pull -d '{"name":"qwen2.5-coder"}' &&
+      curl -s http://ollama:11434/api/pull -d '{"name":"nomic-embed-text"}' &&
+      echo "All models ready."
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD-SHELL", "ps ax|grep ollama"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # ----------------------------------------------------------
+  # OasisAI services — all built from root Dockerfile
+  # ----------------------------------------------------------
+  llm:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: llm
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
+        POETRY_VERSION: ${POETRY_VERSION:-2.2.1}
+    ports:
+      - "8001:8001"
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      - LLM_MODEL=codellama
+      - EMBED_MODEL=nomic-embed-text
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "check.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  indexer:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: indexer
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
+        POETRY_VERSION: ${POETRY_VERSION:-2.2.1}
+    ports:
+      - "8002:8002"
+    environment:
+      - LLM_URL=http://llm:8001
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+      - EMBED_MODEL=nomic-embed-text
+    volumes:
+      - ../repos:/repos:ro
+    depends_on:
+      chroma:
+        condition: service_healthy
+      llm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "check.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  graph:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: graph
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
+        POETRY_VERSION: ${POETRY_VERSION:-2.2.1}
+    ports:
+      - "8003:8003"
+    healthcheck:
+      test: ["CMD", "python", "check.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  agent:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: agent
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
+        POETRY_VERSION: ${POETRY_VERSION:-2.2.1}
+    ports:
+      - "8004:8004"
+    environment:
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+      - GRAPH_URL=http://graph:8003/graph
+      - LLM_URL=http://llm:8001/generate
+      - LLM_MODEL=codellama
+    depends_on:
+      llm:
+        condition: service_healthy
+      graph:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "check.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: gateway
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
+        POETRY_VERSION: ${POETRY_VERSION:-2.2.1}
+    ports:
+      - "8080:8080"
+    environment:
+      - INDEXER_URL=http://indexer:8002
+      - AGENT_URL=http://agent:8004
+      - GRAPH_URL=http://graph:8003
+      - LLM_URL=http://llm:8001
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+    depends_on:
+      indexer:
+        condition: service_healthy
+      agent:
+        condition: service_healthy
+      graph:
+        condition: service_healthy
+      llm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "check.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# ----------------------------------------------------------
+# Volumes
+# ----------------------------------------------------------
+volumes:
+  chroma_data:
+  ollama_data:

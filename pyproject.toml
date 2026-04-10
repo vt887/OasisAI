@@ -1,0 +1,79 @@
+[tool.poetry]
+name = "oasis-ai"
+version = "0.1.0"
+description = "AI-powered code intelligence platform for multi-repository systems"
+authors = ["OasisAI Team <team@oasisai.local>"]
+license = "MIT"
+readme = "README.md"
+# Monorepo root — deps only, not a publishable package
+package-mode = false
+
+
+[tool.poetry.dependencies]
+python = "^3.12"
+
+# Core HTTP & Web Framework
+fastapi = ">=0.110.0"
+uvicorn = {extras = ["standard"], version = ">=0.29.0"}
+httpx = ">=0.27.0"
+
+# Data Validation
+pydantic = ">=2.0.0"
+pydantic-settings = ">=2.0.0"
+
+# Vector Store & Embeddings
+# Pin below 1.0 to avoid onnxruntime 1.24+ which lacks arm64/cp312 wheels
+chromadb = ">=0.5.0,<1.0.0"
+# Force a wheel-compatible onnxruntime version (transitive dep via chromadb)
+onnxruntime = ">=1.16.0,<1.22.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0.0"
+pytest-asyncio = ">=0.21.0"
+pytest-cov = ">=4.0.0"
+pytest-httpx = ">=0.20.0"
+ruff = ">=0.1.0"
+mypy = ">=1.0.0"
+black = ">=23.0.0"
+isort = ">=5.12.0"
+pre-commit = ">=3.0.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 79
+target-version = "py312"
+exclude = [
+    ".git",
+    "__pycache__",
+    ".venv",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+
+[tool.black]
+line-length = 79
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 79
+skip_gitignore = true

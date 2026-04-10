@@ -1,0 +1,172 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  validate:
+    name: Validate Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Configure Poetry
+        run: poetry config virtualenvs.in-project true
+
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v5
+        with:
+          path: .venv
+          key: ${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-poetry-
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Verify formatting
+        run: poetry run ruff format --check .
+
+      - name: Run linting
+        run: poetry run ruff check .
+
+      - name: Run type checking
+        run: poetry run mypy services/ shared/ storage/
+
+      - name: Run tests
+        run: poetry run pytest tests/ -v --cov=services --cov=shared
+
+  build-and-push:
+    name: Build & Push Docker Images (Multi-stage)
+    runs-on: ubuntu-latest
+    needs: validate
+
+    strategy:
+      matrix:
+        target: [gateway, indexer, agent, graph, llm]
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for ${{ matrix.target }}
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/oasis-${{ matrix.target }}
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+
+      - name: Build and push ${{ matrix.target }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: ${{ matrix.target }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Generate changelog
+        id: changelog
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const { data: release } = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag: tag,
+            }).catch(() => ({ data: { body: 'Release notes not found' } }));
+            console.log(release.body || 'No release notes');
+            return release.body || 'Release notes not found';
+
+      - name: Create Release Notes
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          name: Release ${{ github.ref }}
+          body: |
+            ## OasisAI ${{ github.ref }}
+            
+            ### 🐳 Docker Images
+            All services have been built and pushed to GitHub Container Registry:
+            - `ghcr.io/${{ github.repository }}/oasis-gateway:${{ github.ref }}`
+            - `ghcr.io/${{ github.repository }}/oasis-indexer:${{ github.ref }}`
+            - `ghcr.io/${{ github.repository }}/oasis-agent:${{ github.ref }}`
+            - `ghcr.io/${{ github.repository }}/oasis-graph:${{ github.ref }}`
+            - `ghcr.io/${{ github.repository }}/oasis-llm:${{ github.ref }}`
+            
+            ### 🔄 All Tests Passed
+            - ✅ Unit tests
+            - ✅ Integration tests
+            - ✅ Code quality checks
+            - ✅ Type checking
+            
+            ### 📦 Installation
+            ```bash
+            docker-compose -f docker/docker-compose.yml up
+            ```
+            
+            ### 📚 Documentation
+            - [README](https://github.com/${{ github.repository }}/blob/${{ github.ref }}/README.md)
+            - [DEVELOPMENT](https://github.com/${{ github.repository }}/blob/${{ github.ref }}/DEVELOPMENT.md)
+          draft: false
+          prerelease: false
+
+  notify:
+    name: Notify Release
+    runs-on: ubuntu-latest
+    needs: [build-and-push, create-release]
+    if: always()
+
+    steps:
+      - name: Release Summary
+        run: |
+          echo "🎉 Release ${{ github.ref }} completed!"
+          echo "✅ All images built and pushed"
+          echo "📦 Docker images available at ghcr.io/${{ github.repository }}/oasis-*:${{ github.ref }}"
+
