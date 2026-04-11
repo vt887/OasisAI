@@ -1,41 +1,53 @@
-"""oasis-ai llm FastAPI service — exposes LLM generate and embed endpoints."""
-
 from __future__ import annotations
 
-import logging
-import os
+import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from ollama_client import OllamaClient
 from pydantic import BaseModel
 
-# ---------------------------------------------------------------------------
-# Bootstrap
-# ---------------------------------------------------------------------------
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("oasis-llm")
-
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
-DEFAULT_MODEL = os.getenv("LLM_MODEL", "codellama")
-EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
-
-app = FastAPI(
-    title="OasisAI LLM",
-    version="0.1.0",
-    description="AI-powered code intelligence platform",
+from shared.config import settings
+from shared.observability.logging import (
+    configure_logging,
+    request_logging_middleware,
 )
 
+logger = configure_logging("oasis-llm", settings.log_level)
+
+DEFAULT_MODEL = "codellama"
+EMBED_MODEL = "nomic-embed-text"
+
+app = FastAPI(title="OasisAI LLM", version="0.2.0")
 client = OllamaClient(
-    base_url=OLLAMA_URL,
+    base_url=settings.ollama_url,
     default_model=DEFAULT_MODEL,
     embed_model=EMBED_MODEL,
+    timeout=settings.request_timeout_seconds,
 )
 
-# ---------------------------------------------------------------------------
-# Request / Response models (inline for service independence)
-# ---------------------------------------------------------------------------
+
+@app.middleware("http")
+async def log_middleware(
+    request: Request, call_next: Callable[[Request], Awaitable[Any]]
+) -> Any:
+    return await request_logging_middleware(request, call_next, logger)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    logger.exception("global error", extra={"operation": request.url.path})
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "internal_error",
+            "message": "Unexpected server error",
+        },
+    )
 
 
 class GenerateRequest(BaseModel):
@@ -55,43 +67,82 @@ class EmbedRequest(BaseModel):
     model: str | None = None
 
 
+class EmbedBatchRequest(BaseModel):
+    texts: list[str]
+    model: str | None = None
+
+
 class EmbedResponse(BaseModel):
     embedding: list[float]
     model: str
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
+class EmbedBatchResponse(BaseModel):
+    embeddings: list[list[float]]
+    model: str
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+async def health() -> dict[str, str]:
     return {"status": "ok", "service": "oasis-llm"}
 
 
 @app.post("/generate", response_model=GenerateResponse)
-def generate(req: GenerateRequest) -> GenerateResponse:
+async def generate(req: GenerateRequest) -> GenerateResponse:
+    model = req.model or DEFAULT_MODEL
+    start = time.perf_counter()
     try:
-        model = req.model or DEFAULT_MODEL
-        text = client.generate(
+        text = await client.generate(
             prompt=req.prompt,
             model=model,
             system=req.system,
             options=req.options or None,
         )
+        logger.info(
+            "generate complete",
+            extra={
+                "operation": "generate",
+                "duration_ms": round((time.perf_counter() - start) * 1000, 2),
+            },
+        )
         return GenerateResponse(text=text, model=model)
     except Exception as exc:
-        logger.exception("generate failed")
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        logger.exception("generate failed", extra={"operation": "generate"})
+        raise HTTPException(
+            status_code=502, detail="LLM generation failed"
+        ) from exc
 
 
 @app.post("/embed", response_model=EmbedResponse)
-def embed(req: EmbedRequest) -> EmbedResponse:
+async def embed(req: EmbedRequest) -> EmbedResponse:
+    model = req.model or EMBED_MODEL
+    start = time.perf_counter()
     try:
-        model = req.model or EMBED_MODEL
-        vector = client.embed(text=req.text, model=model)
+        vector = await client.embed(text=req.text, model=model)
+        logger.info(
+            "embed complete",
+            extra={
+                "operation": "embed",
+                "duration_ms": round((time.perf_counter() - start) * 1000, 2),
+            },
+        )
         return EmbedResponse(embedding=vector, model=model)
     except Exception as exc:
-        logger.exception("embed failed")
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        logger.exception("embed failed", extra={"operation": "embed"})
+        raise HTTPException(
+            status_code=502, detail="Embedding generation failed"
+        ) from exc
+
+
+@app.post("/embed_batch", response_model=EmbedBatchResponse)
+async def embed_batch(req: EmbedBatchRequest) -> EmbedBatchResponse:
+    model = req.model or EMBED_MODEL
+    try:
+        embeddings = [
+            await client.embed(text=t, model=model) for t in req.texts
+        ]
+        return EmbedBatchResponse(embeddings=embeddings, model=model)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail="Batch embedding failed"
+        ) from exc

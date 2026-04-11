@@ -1,42 +1,33 @@
-"""Ollama HTTP client wrapper.
-
-Exposes two operations used by OasisAI services:
-  - generate(prompt)   → text completion
-  - embed(text)        → vector embedding
-"""
-
 from __future__ import annotations
 
-import logging
+import hashlib
 from typing import Any
 
 import httpx
 
-logger = logging.getLogger(__name__)
-
-_OLLAMA_BASE = "http://localhost:11434"
+from shared.cache import TTLCache
+from shared.config import settings
+from shared.resilience import async_retry
 
 
 class OllamaClient:
-    """Typed wrapper around the Ollama REST API."""
-
     def __init__(
         self,
-        base_url: str = _OLLAMA_BASE,
+        base_url: str = settings.ollama_url,
         default_model: str = "codellama",
         embed_model: str = "nomic-embed-text",
-        timeout: float = 120.0,
+        timeout: float = 30.0,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._default_model = default_model
         self._embed_model = embed_model
-        self._client = httpx.Client(timeout=timeout)
+        self._client = httpx.AsyncClient(timeout=timeout)
+        self._embed_cache = TTLCache[str, list[float]](
+            max_size=settings.embed_cache_size,
+            ttl_seconds=settings.cache_ttl_seconds,
+        )
 
-    # ------------------------------------------------------------------
-    # Text generation
-    # ------------------------------------------------------------------
-
-    def generate(
+    async def generate(
         self,
         prompt: str,
         model: str | None = None,
@@ -44,7 +35,6 @@ class OllamaClient:
         options: dict[str, Any] | None = None,
         stream: bool = False,
     ) -> str:
-        """Call /api/generate and return the response text."""
         payload: dict[str, Any] = {
             "model": model or self._default_model,
             "prompt": prompt,
@@ -55,45 +45,55 @@ class OllamaClient:
         if options:
             payload["options"] = options
 
-        response = self._client.post(
-            f"{self._base}/api/generate", json=payload
+        async def _call() -> str:
+            response = await self._client.post(
+                f"{self._base}/api/generate", json=payload
+            )
+            response.raise_for_status()
+            data = response.json()
+            return str(data.get("response", ""))
+
+        return await async_retry(
+            _call,
+            retries=settings.retries,
+            backoff_seconds=settings.backoff_seconds,
         )
-        response.raise_for_status()
-        data = response.json()
-        text: str = data.get("response", "")
-        logger.debug(
-            "generate: model=%s, tokens=%d",
-            payload["model"],
-            len(text.split()),
+
+    async def embed(self, text: str, model: str | None = None) -> list[float]:
+        mdl = model or self._embed_model
+        cache_key = hashlib.sha256(f"{mdl}:{text}".encode()).hexdigest()
+        if settings.cache_enabled:
+            cached = self._embed_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        payload = {"model": mdl, "prompt": text}
+
+        async def _call() -> list[float]:
+            response = await self._client.post(
+                f"{self._base}/api/embeddings", json=payload
+            )
+            response.raise_for_status()
+            data = response.json()
+            return list(data.get("embedding", []))
+
+        result = await async_retry(
+            _call,
+            retries=settings.retries,
+            backoff_seconds=settings.backoff_seconds,
         )
-        return text
+        if settings.cache_enabled:
+            self._embed_cache.set(cache_key, result)
+        return result
 
-    # ------------------------------------------------------------------
-    # Embeddings
-    # ------------------------------------------------------------------
+    async def embed_batch(
+        self, texts: list[str], model: str | None = None
+    ) -> list[list[float]]:
+        import asyncio
 
-    def embed(self, text: str, model: str | None = None) -> list[float]:
-        """Call /api/embeddings and return the embedding vector."""
-        payload = {
-            "model": model or self._embed_model,
-            "prompt": text,
-        }
-        response = self._client.post(
-            f"{self._base}/api/embeddings", json=payload
+        return await asyncio.gather(
+            *[self.embed(t, model=model) for t in texts]
         )
-        response.raise_for_status()
-        data = response.json()
-        embedding: list[float] = data.get("embedding", [])
-        logger.debug(
-            "embed: model=%s, dim=%d", payload["model"], len(embedding)
-        )
-        return embedding
 
-    def close(self) -> None:
-        self._client.close()
-
-    def __enter__(self) -> "OllamaClient":
-        return self
-
-    def __exit__(self, *_: Any) -> None:
-        self.close()
+    async def close(self) -> None:
+        await self._client.aclose()

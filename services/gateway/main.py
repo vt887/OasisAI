@@ -1,39 +1,28 @@
-"""oasis-ai gateway: main API gateway orchestrating all OasisAI services."""
-
 from __future__ import annotations
 
-import logging
-import os
-from typing import Any
+import time
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
 import chromadb
 import httpx
 from chromadb.config import Settings
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-# ---------------------------------------------------------------------------
-# Bootstrap
-# ---------------------------------------------------------------------------
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("oasis-gateway")
-
-INDEXER_URL = os.getenv("INDEXER_URL", "http://indexer:8002")
-AGENT_URL = os.getenv("AGENT_URL", "http://agent:8004")
-GRAPH_URL = os.getenv("GRAPH_URL", "http://graph:8003")
-LLM_URL = os.getenv("LLM_URL", "http://llm:8001")
-CHROMA_HOST = os.getenv("CHROMA_HOST", "chroma")
-CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
-
-app = FastAPI(
-    title="OasisAI Gateway",
-    version="0.1.0",
-    description="AI-powered code intelligence platform",
+from shared.cache import TTLCache
+from shared.config import settings
+from shared.observability.logging import (
+    configure_logging,
+    request_logging_middleware,
 )
+from shared.resilience import async_retry
 
-# Add CORS middleware
+logger = configure_logging("oasis-gateway", settings.log_level)
+
+app = FastAPI(title="OasisAI Gateway", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,17 +31,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_http = httpx.Client(timeout=180.0)
+_http = httpx.AsyncClient(timeout=settings.request_timeout_seconds)
 _chroma = chromadb.HttpClient(
-    host=CHROMA_HOST,
-    port=CHROMA_PORT,
+    host=settings.chroma_host,
+    port=settings.chroma_port,
     settings=Settings(anonymized_telemetry=False),
 )
+_search_cache: TTLCache[str, list[dict[str, Any]]] = TTLCache(
+    max_size=512, ttl_seconds=settings.cache_ttl_seconds
+)
+_metrics: dict[str, float] = {"queries": 0, "query_latency_total_ms": 0}
 
 
-# ---------------------------------------------------------------------------
-# Request / Response schemas
-# ---------------------------------------------------------------------------
+@app.middleware("http")
+async def log_middleware(
+    request: Request, call_next: Callable[[Request], Awaitable[Any]]
+) -> Any:
+    return await request_logging_middleware(request, call_next, logger)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    logger.exception(
+        "gateway unhandled", extra={"operation": request.url.path}
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "internal_error",
+            "message": "Unexpected server error",
+        },
+    )
 
 
 class AskRequest(BaseModel):
@@ -100,132 +111,154 @@ class IndexResponse(BaseModel):
     status: str = "ok"
 
 
-# ---------------------------------------------------------------------------
-# Helper: forward request to a downstream service
-# ---------------------------------------------------------------------------
-
-
-def _forward(url: str, payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        resp = _http.post(url, json=payload)
+async def _forward(
+    url: str, payload: dict[str, Any], operation: str
+) -> dict[str, Any]:
+    async def _call() -> dict[str, Any]:
+        resp = await _http.post(url, json=payload)
         resp.raise_for_status()
         data = resp.json()
-        if isinstance(data, dict):
-            return data
-        return {}
-    except httpx.HTTPStatusError as exc:
+        return data if isinstance(data, dict) else {}
+
+    try:
+        return await async_retry(
+            _call,
+            retries=settings.retries,
+            backoff_seconds=settings.backoff_seconds,
+        )
+    except httpx.TimeoutException as exc:
         raise HTTPException(
-            status_code=exc.response.status_code,
-            detail=exc.response.text,
+            status_code=504, detail=f"{operation} timeout"
         ) from exc
     except httpx.RequestError as exc:
         raise HTTPException(
-            status_code=503, detail=f"Upstream unavailable: {exc}"
+            status_code=503, detail=f"{operation} unavailable"
+        ) from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=exc.response.status_code, detail="upstream error"
         ) from exc
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-
 @app.get("/health")
-def health() -> dict[str, str]:
+async def health() -> dict[str, str]:
     return {"status": "ok", "service": "oasis-gateway"}
 
 
+@app.get("/ready")
+async def ready() -> dict[str, Any]:
+    checks = {"chroma": False, "ollama": False}
+    try:
+        _chroma.heartbeat()
+        checks["chroma"] = True
+    except Exception:
+        checks["chroma"] = False
+    try:
+        resp = await _http.get(f"{settings.llm_url}/health")
+        checks["ollama"] = resp.status_code == 200
+    except Exception:
+        checks["ollama"] = False
+    return {
+        "status": "ready" if all(checks.values()) else "degraded",
+        "checks": checks,
+    }
+
+
+@app.get("/metrics")
+async def metrics() -> dict[str, Any]:
+    avg = (
+        0.0
+        if _metrics["queries"] == 0
+        else _metrics["query_latency_total_ms"] / _metrics["queries"]
+    )
+    docs = _chroma.get_or_create_collection(
+        name="oasis_code", metadata={"hnsw:space": "cosine"}
+    ).count()
+    return {
+        "indexed_documents": docs,
+        "queries": int(_metrics["queries"]),
+        "average_latency_ms": round(avg, 2),
+    }
+
+
 @app.post("/ask", response_model=AskResponse)
-def ask(req: AskRequest) -> AskResponse:
-    """Ask a free-form question about the indexed codebase."""
-    data = _forward(
-        f"{AGENT_URL}/ask",
+async def ask(req: AskRequest) -> AskResponse:
+    data = await _forward(
+        f"{settings.agent_url}/ask",
         {"question": req.question, "repo": req.repo, "top_k": req.top_k},
+        "ask",
     )
     return AskResponse(**data)
 
 
 @app.post("/search", response_model=SearchResponse)
-def search(req: SearchRequest) -> SearchResponse:
-    """Semantic search across indexed code chunks."""
-    try:
-        # Embed the query via LLM service
-        embed_resp = _forward(
-            f"{LLM_URL}/embed",
-            {"text": req.query},
+async def search(req: SearchRequest) -> SearchResponse:
+    start = time.perf_counter()
+    key = f"{req.repo}:{req.top_k}:{req.query}"
+    if settings.cache_enabled:
+        cached = _search_cache.get(key)
+        if cached is not None:
+            return SearchResponse(results=cached)
+
+    embed_resp = await _forward(
+        f"{settings.llm_url}/embed", {"text": req.query}, "embed"
+    )
+    query_embedding = embed_resp.get("embedding", [])
+    collection = _chroma.get_or_create_collection(
+        name="oasis_code", metadata={"hnsw:space": "cosine"}
+    )
+    include_param = cast(Any, ["documents", "metadatas", "distances"])
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=req.top_k,
+        where={"repo": req.repo} if req.repo else None,
+        include=include_param,
+    )
+
+    hits: list[dict[str, Any]] = []
+    for chunk_id, doc, meta, dist in zip(
+        (results.get("ids") or [[]])[0],
+        (results.get("documents") or [[]])[0],
+        (results.get("metadatas") or [[]])[0],
+        (results.get("distances") or [[]])[0],
+    ):
+        hits.append(
+            {
+                "id": chunk_id,
+                "document": doc,
+                "content": doc,
+                "metadata": meta,
+                "distance": float(dist),
+            }
         )
-        query_embedding = embed_resp.get("embedding", [])
 
-        # Query ChromaDB directly
-        collection = _chroma.get_or_create_collection(
-            name="oasis_code",
-            metadata={"hnsw:space": "cosine"},
-        )
-
-        where: dict[str, Any] | None = None
-        if req.repo:
-            where = {"repo": req.repo}
-
-        from typing import cast
-
-        # ChromaDB typing expects IncludeEnum entries; cast the string list
-        include_param = cast(Any, ["documents", "metadatas", "distances"])
-
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=req.top_k,
-            where=where,
-            include=include_param,
-        )
-
-        # Format results
-        hits: list[dict[str, Any]] = []
-        # results values can be None; ensure we have indexable lists
-        ids_all = results.get("ids") or [[]]
-        docs_all = results.get("documents") or [[]]
-        metas_all = results.get("metadatas") or [[]]
-        dists_all = results.get("distances") or [[]]
-
-        ids = ids_all[0]
-        docs = docs_all[0]
-        metas = metas_all[0]
-        dists = dists_all[0]
-
-        for chunk_id, doc, meta, dist in zip(ids, docs, metas, dists):
-            hits.append(
-                {
-                    "id": chunk_id,
-                    "document": doc,
-                    "content": doc,
-                    "metadata": meta,
-                    "distance": float(dist),
-                }
-            )
-        return SearchResponse(results=hits)
-    except Exception as exc:
-        logger.exception("Search failed")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if settings.cache_enabled:
+        _search_cache.set(key, hits)
+    _metrics["queries"] += 1
+    _metrics["query_latency_total_ms"] += (time.perf_counter() - start) * 1000
+    return SearchResponse(results=hits)
 
 
 @app.post("/refactor", response_model=RefactorResponse)
-def refactor(req: RefactorRequest) -> RefactorResponse:
-    """Generate a refactor plan and unified diff patches."""
-    data = _forward(
-        f"{AGENT_URL}/refactor",
+async def refactor(req: RefactorRequest) -> RefactorResponse:
+    data = await _forward(
+        f"{settings.agent_url}/refactor",
         {
             "instruction": req.instruction,
             "repo": req.repo,
             "target_file": req.target_file,
             "top_k": req.top_k,
         },
+        "refactor",
     )
     return RefactorResponse(**data)
 
 
 @app.post("/index", response_model=IndexResponse)
-def index(req: IndexRequest) -> IndexResponse:
-    """Trigger ingestion of a repository into ChromaDB."""
-    data = _forward(
-        f"{INDEXER_URL}/index",
+async def index(req: IndexRequest) -> IndexResponse:
+    data = await _forward(
+        f"{settings.indexer_url}/index",
         {"repo_path": req.repo_path, "repo_name": req.repo_name},
+        "index",
     )
     return IndexResponse(**data)
