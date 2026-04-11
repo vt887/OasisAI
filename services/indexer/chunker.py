@@ -72,7 +72,16 @@ class CodeChunker:
         if not lines:
             return []
 
-        # Use a generator internally so callers can stream if desired.
+        # For Python files prefer symbol-aware chunking (functions/classes).
+        if language == "python":
+            try:
+                return list(
+                    self._chunk_python(path, repo, language, lines, text)
+                )
+            except Exception:
+                logger.exception("symbol-aware chunking failed for %s", path)
+
+        # Fallback to window-based chunks for other languages or on error.
         return list(self.iter_chunks(path, repo, language, lines))
 
     def iter_chunks(
@@ -106,8 +115,73 @@ class CodeChunker:
                 "chunk_index": chunk_index,
             }
 
+    def _chunk_python(
+        self,
+        path: Path,
+        repo: str,
+        language: str,
+        lines: list[str],
+        full_text: str,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield symbol-aware chunks for Python files: one chunk per
+        top-level function or class (including methods as part of class
+        body). If no symbols are found, yield windowed chunks instead.
+        """
+        import ast
 
-def _make_id(repo: str, file_path: str, chunk_index: int) -> str:
+        module_name = path.stem
+        tree = ast.parse(full_text)
+        symbols: list[tuple[int, int, str, str]] = []  # start, end, kind, name
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                start = getattr(node, "lineno", None)
+                end = getattr(node, "end_lineno", None) or start
+                if isinstance(start, int) and isinstance(end, int):
+                    symbols.append(
+                        (start - 1, end, "function", str(node.name))
+                    )
+            elif isinstance(node, ast.ClassDef):
+                start = getattr(node, "lineno", None)
+                end = getattr(node, "end_lineno", None) or start
+                if isinstance(start, int) and isinstance(end, int):
+                    symbols.append((start - 1, end, "class", str(node.name)))
+
+        if not symbols:
+            # No top-level symbols: fallback to window chunks
+            yield from self.iter_chunks(path, repo, language, lines)
+            return
+
+        # Sort symbols by start line
+        symbols.sort(key=lambda x: x[0])
+        chunk_index = 0
+        for start, end, kind, name in symbols:
+            content = "".join(lines[start:end])
+            token_count = max(10, int(len(content) / 50))
+            yield {
+                "id": _make_id(repo, str(path), f"sym-{start}-{end}-{name}"),
+                "content": content,
+                "repo": repo,
+                "file_path": str(path),
+                "module": module_name,
+                "language": language,
+                "start_line": start + 1,
+                "end_line": end,
+                "chunk_index": chunk_index,
+                "symbols": [
+                    {
+                        "name": name,
+                        "kind": kind,
+                        "start_line": start + 1,
+                        "end_line": end,
+                        "qualified_name": f"{module_name}.{name}",
+                    }
+                ],
+                "token_count": token_count,
+            }
+            chunk_index += 1
+
+
+def _make_id(repo: str, file_path: str, chunk_index: int | str) -> str:
     """Return a deterministic id for a chunk.
 
     The id is an MD5 hex digest of the repo, file path and chunk

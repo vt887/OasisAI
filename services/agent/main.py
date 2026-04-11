@@ -1,22 +1,30 @@
 from __future__ import annotations
 
+import importlib
 from collections.abc import Awaitable, Callable
-from typing import Any
+from types import ModuleType
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from agent import RefactorAgent
 from shared.observability.logging import (
     configure_logging,
     request_logging_middleware,
 )
 
+if TYPE_CHECKING:
+    from .agent import RefactorAgent
+
+_AGENT_MODULE: ModuleType = importlib.import_module(
+    f"{__package__}.agent" if __package__ else "agent"
+)
+
 logger = configure_logging("oasis-agent")
 
 app = FastAPI(title="oasis-agent", version="0.2.0")
-agent = RefactorAgent()
+agent: RefactorAgent = _AGENT_MODULE.RefactorAgent()
 
 
 @app.middleware("http")
@@ -44,6 +52,7 @@ class AskRequest(BaseModel):
     question: str
     repo: str | None = None
     top_k: int = 5
+    debug: bool = False
 
 
 class AskResponse(BaseModel):
@@ -56,6 +65,7 @@ class RefactorRequest(BaseModel):
     repo: str | None = None
     target_file: str | None = None
     top_k: int = 5
+    debug: bool = False
 
 
 class RefactorResponse(BaseModel):
@@ -73,7 +83,10 @@ async def health() -> dict[str, str]:
 async def ask(req: AskRequest) -> AskResponse:
     try:
         result = await agent.ask(
-            question=req.question, repo=req.repo, top_k=req.top_k
+            question=req.question,
+            repo=req.repo,
+            top_k=req.top_k,
+            debug=req.debug,
         )
         return AskResponse(**result)
     except Exception as exc:
@@ -88,6 +101,7 @@ async def refactor(req: RefactorRequest) -> RefactorResponse:
             repo=req.repo,
             target_file=req.target_file,
             top_k=req.top_k,
+            debug=req.debug,
         )
         return RefactorResponse(**result)
     except Exception as exc:

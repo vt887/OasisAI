@@ -26,9 +26,12 @@ class TestChunkMetadata:
         meta = ChunkMetadata(
             repo="myrepo",
             file_path="src/main.py",
+            module=None,
             start_line=0,
             end_line=0,
             chunk_index=0,
+            token_count=0,
+            embedding_id=None,
         )
         assert meta.language == Language.UNKNOWN
         assert meta.start_line == 0
@@ -39,10 +42,13 @@ class TestChunkMetadata:
         meta = ChunkMetadata(
             repo="r",
             file_path="f.py",
+            module=None,
             language=Language.PYTHON,
             start_line=0,
             end_line=0,
             chunk_index=0,
+            token_count=0,
+            embedding_id=None,
         )
         assert meta.language == Language.PYTHON
 
@@ -51,9 +57,12 @@ class TestChunkMetadata:
             ChunkMetadata(
                 repo="r",
                 file_path="f.py",
+                module=None,
                 start_line=-1,
                 end_line=0,
                 chunk_index=0,
+                token_count=0,
+                embedding_id=None,
             )
 
 
@@ -62,9 +71,12 @@ class TestCodeChunk:
         meta = ChunkMetadata(
             repo="repo",
             file_path="a.py",
+            module=None,
             start_line=0,
             end_line=0,
             chunk_index=0,
+            token_count=0,
+            embedding_id=None,
         )
         chunk = CodeChunk(
             id="abc123",
@@ -79,9 +91,12 @@ class TestCodeChunk:
         meta = ChunkMetadata(
             repo="repo",
             file_path="a.py",
+            module=None,
             start_line=0,
             end_line=0,
             chunk_index=0,
+            token_count=0,
+            embedding_id=None,
         )
         chunk = CodeChunk(
             id="abc", content="x = 1", metadata=meta, embedding=[0.1, 0.2, 0.3]
@@ -96,7 +111,9 @@ class TestGraphModels:
             id="repo::file.py::function::foo",
             kind=NodeKind.FUNCTION,
             name="foo",
+            qualified_name=None,
             file_path="file.py",
+            ast_hash=None,
         )
         assert node.kind == NodeKind.FUNCTION
 

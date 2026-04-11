@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import importlib
 import json
 import logging
 import time
 from pathlib import Path
+from types import ModuleType
 from typing import Any, cast
 
 import chromadb
@@ -13,10 +15,15 @@ import httpx
 from chromadb.api import ClientAPI
 from chromadb.api.models.Collection import Collection
 from chromadb.config import Settings
-from chunker import CodeChunker
-from scanner import RepoScanner
 
 from shared.config import settings
+
+_CHUNKER_MODULE: ModuleType = importlib.import_module(
+    f"{__package__}.chunker" if __package__ else "chunker"
+)
+_SCANNER_MODULE: ModuleType = importlib.import_module(
+    f"{__package__}.scanner" if __package__ else "scanner"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +40,7 @@ class IndexPipeline:
         self._chroma_port = chroma_port
         self._llm_url = llm_url.rstrip("/")
         self._embed_model = embed_model
-        self._chunker = CodeChunker()
+        self._chunker = _CHUNKER_MODULE.CodeChunker()
         self._http: httpx.Client | None = None
         self._chroma: ClientAPI | None = None
         self._collection: Collection | None = None
@@ -49,7 +56,7 @@ class IndexPipeline:
         """
         logger.info("Start indexing repo %s (%s)", repo_name, repo_path)
         self._ensure_initialized()
-        scanner = RepoScanner(repo_path)
+        scanner = _SCANNER_MODULE.RepoScanner(repo_path)
 
         indexed = 0
         batch: list[dict[str, Any]] = []
@@ -80,6 +87,28 @@ class IndexPipeline:
         self._save_state()
         logger.info("Indexing complete: %d chunks indexed", indexed)
         return indexed
+
+    def index_repos(self, repos_root: str) -> dict[str, int]:
+        """Index all repositories found under *repos_root* directory.
+
+        Each immediate child directory is treated as a repository and
+        indexed separately. Returns a mapping repo_name -> chunks_indexed.
+        """
+        root = Path(repos_root)
+        if not root.is_dir():
+            raise ValueError(f"repos_root is not a directory: {repos_root}")
+        results: dict[str, int] = {}
+        for child in sorted(root.iterdir()):
+            if not child.is_dir():
+                continue
+            repo_name = child.name
+            try:
+                count = self.index_repo(str(child), repo_name)
+                results[repo_name] = count
+            except Exception:
+                logger.exception("Failed to index repo %s", repo_name)
+                results[repo_name] = 0
+        return results
 
     def _chunk_file_if_changed(
         self, file_path: str, language: str, repo_name: str
@@ -132,17 +161,23 @@ class IndexPipeline:
             ids=[c["id"] for c in chunks],
             embeddings=cast(Any, embeddings),
             documents=[c["content"] for c in chunks],
-            metadatas=[
-                {
-                    "repo": c["repo"],
-                    "file_path": c["file_path"],
-                    "language": c["language"],
-                    "start_line": c["start_line"],
-                    "end_line": c["end_line"],
-                    "chunk_index": c["chunk_index"],
-                }
-                for c in chunks
-            ],
+            metadatas=cast(
+                Any,
+                [
+                    {
+                        "repo": str(c.get("repo", "")),
+                        "file_path": str(c.get("file_path", "")),
+                        "module": str(c.get("module", "")),
+                        "language": str(c.get("language", "")),
+                        "start_line": int(c.get("start_line", 0) or 0),
+                        "end_line": int(c.get("end_line", 0) or 0),
+                        "chunk_index": int(c.get("chunk_index", 0) or 0),
+                        "symbols": c.get("symbols", []),
+                        "token_count": int(c.get("token_count", 0) or 0),
+                    }
+                    for c in chunks
+                ],
+            ),
         )
 
     def close(self) -> None:
@@ -165,7 +200,8 @@ class IndexPipeline:
                 ),
             )
             self._collection = self._chroma.get_or_create_collection(
-                name="oasis_code", metadata={"hnsw:space": "cosine"}
+                name=settings.chroma_collection,
+                metadata={"hnsw:space": "cosine"},
             )
         except Exception:
             self._chroma = None

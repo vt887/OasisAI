@@ -71,11 +71,13 @@ class AskRequest(BaseModel):
     question: str = Field(..., min_length=1)
     repo: str | None = None
     top_k: int = Field(5, ge=1, le=50)
+    debug: bool = False
 
 
 class AskResponse(BaseModel):
     answer: str
     sources: list[dict[str, Any]] = []
+    context_provenance: list[dict[str, Any]] | None = None
 
 
 class SearchRequest(BaseModel):
@@ -93,12 +95,15 @@ class RefactorRequest(BaseModel):
     repo: str | None = None
     target_file: str | None = None
     top_k: int = Field(5, ge=1, le=50)
+    debug: bool = False
 
 
 class RefactorResponse(BaseModel):
     plan: str
     patches: list[str] = []
     sources: list[dict[str, Any]] = []
+    affected_repos: list[str] | None = None
+    impacted_symbols: list[str] | None = None
 
 
 class IndexRequest(BaseModel):
@@ -173,7 +178,7 @@ async def metrics() -> dict[str, Any]:
         else _metrics["query_latency_total_ms"] / _metrics["queries"]
     )
     docs = _chroma.get_or_create_collection(
-        name="oasis_code", metadata={"hnsw:space": "cosine"}
+        name=settings.chroma_collection, metadata={"hnsw:space": "cosine"}
     ).count()
     return {
         "indexed_documents": docs,
@@ -186,7 +191,12 @@ async def metrics() -> dict[str, Any]:
 async def ask(req: AskRequest) -> AskResponse:
     data = await _forward(
         f"{settings.agent_url}/ask",
-        {"question": req.question, "repo": req.repo, "top_k": req.top_k},
+        {
+            "question": req.question,
+            "repo": req.repo,
+            "top_k": req.top_k,
+            "debug": req.debug,
+        },
         "ask",
     )
     return AskResponse(**data)
@@ -206,7 +216,7 @@ async def search(req: SearchRequest) -> SearchResponse:
     )
     query_embedding = embed_resp.get("embedding", [])
     collection = _chroma.get_or_create_collection(
-        name="oasis_code", metadata={"hnsw:space": "cosine"}
+        name=settings.chroma_collection, metadata={"hnsw:space": "cosine"}
     )
     include_param = cast(Any, ["documents", "metadatas", "distances"])
     results = collection.query(
@@ -250,6 +260,7 @@ async def refactor(req: RefactorRequest) -> RefactorResponse:
             "repo": req.repo,
             "target_file": req.target_file,
             "top_k": req.top_k,
+            "debug": req.debug,
         },
         "refactor",
     )

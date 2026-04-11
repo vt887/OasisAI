@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from types import ModuleType
+from typing import TYPE_CHECKING, Any
 
-from parser import ParsedModule, PythonASTParser
+if TYPE_CHECKING:
+    from .parser import ParsedModule
+
+_PARSER_MODULE: ModuleType = importlib.import_module(
+    f"{__package__}.parser" if __package__ else "parser"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +52,7 @@ class GraphBuilder:
     """Build a Graph from ParsedModule objects."""
 
     def __init__(self) -> None:
-        self._parser = PythonASTParser()
+        self._parser = _PARSER_MODULE.PythonASTParser()
 
     # ------------------------------------------------------------------
     # Public API

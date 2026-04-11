@@ -12,9 +12,9 @@ from typing import Any
 import chromadb
 from chromadb.config import Settings
 
-logger = logging.getLogger(__name__)
+from shared.config import settings
 
-_DEFAULT_COLLECTION = "oasis_code"
+logger = logging.getLogger(__name__)
 
 
 class ChromaClient:
@@ -22,10 +22,11 @@ class ChromaClient:
 
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 8000,
-        collection_name: str = _DEFAULT_COLLECTION,
+        host: str = settings.chroma_host,
+        port: int = settings.chroma_port,
+        collection_name: str = settings.chroma_collection,
     ) -> None:
+        # prefer explicit arg, then settings value
         self._collection_name = collection_name
         self._client = chromadb.HttpClient(
             host=host,
@@ -118,7 +119,6 @@ class ChromaClient:
 
     def count(self) -> int:
         """Return the total number of stored chunks."""
-        # The underlying client may return a value typed as Any; coerce to int
         try:
             return int(self._collection.count())
         except Exception:

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from types import ModuleType
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pipeline import IndexPipeline
 from pydantic import BaseModel
 
 from shared.observability.logging import (
@@ -16,10 +17,17 @@ from shared.observability.logging import (
 )
 from shared.timing import calculate_duration_ms
 
+if TYPE_CHECKING:
+    from .pipeline import IndexPipeline
+
+_PIPELINE_MODULE: ModuleType = importlib.import_module(
+    f"{__package__}.pipeline" if __package__ else "pipeline"
+)
+
 logger = configure_logging("oasis-indexer")
 
 app = FastAPI(title="OasisAI Indexer", version="0.2.0")
-pipeline = IndexPipeline()
+pipeline: IndexPipeline = _PIPELINE_MODULE.IndexPipeline()
 
 
 @app.middleware("http")
@@ -48,6 +56,10 @@ async def global_exception_handler(
 class IndexRequest(BaseModel):
     repo_path: str
     repo_name: str
+
+
+class IndexAllRequest(BaseModel):
+    repos_root: str
 
 
 class IndexResponse(BaseModel):
@@ -81,6 +93,17 @@ async def index_repo(req: IndexRequest) -> IndexResponse:
     except Exception as exc:
         logger.exception("index failed", extra={"operation": "index"})
         raise HTTPException(status_code=500, detail="Indexing failed") from exc
+
+
+@app.post("/index_all")
+async def index_all(req: IndexAllRequest) -> dict[str, int]:
+    """Index all repositories found under *repos_root* and return counts."""
+    try:
+        results = pipeline.index_repos(req.repos_root)
+        return results
+    except Exception:
+        logger.exception("index_all failed")
+        raise HTTPException(status_code=500, detail="Indexing failed")
 
 
 def main() -> None:

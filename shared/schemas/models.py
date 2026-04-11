@@ -40,10 +40,17 @@ class ChunkMetadata(BaseModel):
     file_path: str = Field(
         ..., description="Relative file path within the repo"
     )
+    module: str | None = Field(
+        None, description="Python module path or dotted module name"
+    )
     language: Language = Language.UNKNOWN
     start_line: int = Field(0, ge=0)
     end_line: int = Field(0, ge=0)
     chunk_index: int = Field(0, ge=0)
+    token_count: int = Field(0, ge=0, description="Estimated token count")
+    embedding_id: str | None = Field(
+        None, description="ID of embedding/vector in vector DB"
+    )
 
 
 class CodeChunk(BaseModel):
@@ -52,6 +59,15 @@ class CodeChunk(BaseModel):
     metadata: ChunkMetadata
     embedding: list[float] | None = Field(
         None, description="Vector embedding (set after encoding)"
+    )
+    # Symbol-aware metadata: list of symbols defined or encompassed by this
+    # chunk (functions, classes, methods)
+    symbols: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "List of symbol dicts with keys: name, kind, start_line, "
+            "end_line, qualified_name"
+        ),
     )
 
 
@@ -88,6 +104,8 @@ class SearchResult(BaseModel):
     score: float = Field(
         ..., description="Similarity score (higher is better)"
     )
+    repo: str | None = None
+    symbol: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -143,10 +161,18 @@ class GraphNode(BaseModel):
     )
     kind: NodeKind
     name: str
+    qualified_name: str | None = Field(
+        None, description="Fully-qualified name (repo.module:Class.method)"
+    )
     file_path: str
     start_line: int = 0
     end_line: int = 0
     repo: str = ""
+    ast_hash: str | None = Field(
+        None, description="Short hash of AST for change detection"
+    )
+    exports: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class GraphEdge(BaseModel):

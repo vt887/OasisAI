@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     chroma_path: str = "/data/chroma"
     chroma_host: str = "chroma"
     chroma_port: int = 8000
+    chroma_collection: str = "oasis_code"
 
     llm_url: str = "http://llm:8001"
     agent_url: str = "http://agent:8004"

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import importlib
 import logging
+from types import ModuleType
 from typing import Any
 
 import httpx
 
 from shared.config import settings
 from shared.resilience import async_retry
+
+_CONTEXT_BUILDER_MODULE: ModuleType = importlib.import_module(
+    f"{__package__}.context_builder" if __package__ else "context_builder"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +43,34 @@ class RefactorAgent:
         )
 
     async def ask(
-        self, question: str, repo: str | None = None, top_k: int = 5
+        self,
+        question: str,
+        repo: str | None = None,
+        top_k: int = 5,
+        debug: bool = False,
     ) -> dict[str, Any]:
-        results = await self._search(question, repo=repo, top_k=top_k)
+        # Use smart context builder instead of raw vector DB search
+        max_tokens = max(500, top_k * 200)
+        bundle = await _CONTEXT_BUILDER_MODULE.build_context(
+            question,
+            max_tokens=max_tokens,
+            repo_filters=[repo] if repo else None,
+            top_k=top_k,
+            debug=debug,
+        )
+        results = bundle.get("ordered_chunks", [])
         prompt = (
             f"{_format_context(results)}\n\nQuestion: {question}\n\nAnswer:"
         )
         answer = await self._generate(prompt, system=_ASK_SYSTEM)
-        return {"answer": answer, "sources": results}
+        out: dict[str, Any] = {
+            "answer": answer,
+            "sources": results,
+            "context_provenance": bundle.get("provenance"),
+        }
+        if debug:
+            out["debug"] = bundle.get("debug")
+        return out
 
     async def refactor(
         self,
@@ -52,8 +78,17 @@ class RefactorAgent:
         repo: str | None = None,
         target_file: str | None = None,
         top_k: int = 5,
+        debug: bool = False,
     ) -> dict[str, Any]:
-        results = await self._search(instruction, repo=repo, top_k=top_k)
+        max_tokens = max(800, top_k * 250)
+        bundle = await _CONTEXT_BUILDER_MODULE.build_context(
+            instruction,
+            max_tokens=max_tokens,
+            repo_filters=[repo] if repo else None,
+            top_k=top_k,
+            debug=debug,
+        )
+        results = bundle.get("ordered_chunks", [])
         graph_context = ""
         if target_file and repo:
             graph_context = await self._expand_graph(
@@ -74,7 +109,28 @@ class RefactorAgent:
         )
         response_text = await self._generate(prompt, system=_REFACTOR_SYSTEM)
         plan, patches = _parse_plan_and_patches(response_text)
-        return {"plan": plan, "patches": patches, "sources": results}
+        affected_repos = (
+            list(bundle.get("grouped_by_repo", {}).keys()) if bundle else []
+        )
+        # derive impacted symbols from selected chunks' metadata
+        impacted: list[str] = []
+        for c in results:
+            syms = c.get("metadata", {}).get("symbols") or []
+            for s in syms:
+                name = s.get("qualified_name") or s.get("name")
+                if name and name not in impacted:
+                    impacted.append(name)
+
+        out = {
+            "plan": plan,
+            "patches": patches,
+            "sources": results,
+            "affected_repos": affected_repos,
+            "impacted_symbols": impacted,
+        }
+        if debug:
+            out["debug"] = bundle.get("debug")
+        return out
 
     async def _search(
         self, query: str, repo: str | None, top_k: int
