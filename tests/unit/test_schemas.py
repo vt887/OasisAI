@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from shared.config import settings
 from shared.schemas.models import (
     AskRequest,
     ChunkMetadata,
@@ -134,9 +135,9 @@ class TestRequestSchemas:
 
     def test_generate_request_defaults(self) -> None:
         req = GenerateRequest(prompt="hello")
-        assert req.model == "codellama"
+        assert req.model == settings.default_model
         assert req.system is None
 
     def test_embedding_request_defaults(self) -> None:
         req = EmbeddingRequest(text="hello world")
-        assert req.model == "nomic-embed-text"
+        assert req.model == settings.embed_model

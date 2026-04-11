@@ -10,10 +10,11 @@ from shared.resilience import async_retry
 
 logger = logging.getLogger(__name__)
 
-CHROMA_SEARCH_URL = "http://oasis-gateway:8000/search"
-GRAPH_URL = "http://graph:8003/graph"
-LLM_URL = "http://llm:8001/generate"
-LLM_MODEL = "codellama"
+CHROMA_SEARCH_URL = (
+    f"http://{settings.chroma_host}:{settings.chroma_port}/search"
+)
+GRAPH_URL = f"{settings.graph_url}/graph"
+LLM_URL = f"{settings.llm_url}/generate"
 
 _REFACTOR_SYSTEM = (
     "You are an expert software engineer. Output plan and unified diffs only."
@@ -26,7 +27,7 @@ class RefactorAgent:
         self,
         graph_url: str = GRAPH_URL,
         llm_url: str = LLM_URL,
-        llm_model: str = LLM_MODEL,
+        llm_model: str = settings.default_model,
     ) -> None:
         self._graph_url = graph_url
         self._llm_url = llm_url

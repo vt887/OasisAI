@@ -28,5 +28,15 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 15
     embed_cache_size: int = 4096
 
+    default_model: str = "codellama"
+    embed_model: str = "nomic-embed-text"
+
+    chunk_size: int = 60
+    chunk_overlap: int = 10
+    batch_size: int = 32
+    max_workers: int = 8
+    http_client_timeout_seconds: float = 120.0
+    chroma_anonymized_telemetry: bool = False
+
 
 settings = Settings()

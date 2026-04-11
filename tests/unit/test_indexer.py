@@ -17,6 +17,8 @@ from chunker import CodeChunker, _make_id
 from pipeline import IndexPipeline
 from scanner import RepoScanner
 
+from shared.config import settings
+
 
 class TestCodeChunker:
     def setup_method(self) -> None:
@@ -134,10 +136,10 @@ class TestIndexPipeline:
     def test_init_with_defaults(self) -> None:
         """Test initialization with default environment variables."""
         pipeline = IndexPipeline()
-        assert pipeline._chroma_host == "localhost"
-        assert pipeline._chroma_port == 8000
-        assert pipeline._llm_url == "http://llm:8001"
-        assert pipeline._embed_model == "nomic-embed-text"
+        assert pipeline._chroma_host == settings.chroma_host
+        assert pipeline._chroma_port == settings.chroma_port
+        assert pipeline._llm_url == settings.llm_url
+        assert pipeline._embed_model == settings.embed_model
 
     def test_close_when_http_is_none(self) -> None:
         """Test close() handles None HTTP client gracefully."""
@@ -251,7 +253,8 @@ class TestIndexPipeline:
             pipeline._embed_batch(["test"])
 
     def test_upsert_batch_raises_when_collection_is_none(self) -> None:
-        """Test _upsert_batch raises RuntimeError when collection unavailable."""
+        """Test _upsert_batch raises RuntimeError when the collection
+        unavailable."""
         pipeline = IndexPipeline()
         pipeline._initialized = True
         pipeline._collection = None

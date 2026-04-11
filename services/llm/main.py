@@ -14,17 +14,15 @@ from shared.observability.logging import (
     configure_logging,
     request_logging_middleware,
 )
+from shared.timing import calculate_duration_ms
 
 logger = configure_logging("oasis-llm", settings.log_level)
-
-DEFAULT_MODEL = "codellama"
-EMBED_MODEL = "nomic-embed-text"
 
 app = FastAPI(title="OasisAI LLM", version="0.2.0")
 client = OllamaClient(
     base_url=settings.ollama_url,
-    default_model=DEFAULT_MODEL,
-    embed_model=EMBED_MODEL,
+    default_model=settings.default_model,
+    embed_model=settings.embed_model,
     timeout=settings.request_timeout_seconds,
 )
 
@@ -89,7 +87,7 @@ async def health() -> dict[str, str]:
 
 @app.post("/generate", response_model=GenerateResponse)
 async def generate(req: GenerateRequest) -> GenerateResponse:
-    model = req.model or DEFAULT_MODEL
+    model = req.model or settings.default_model
     start = time.perf_counter()
     try:
         text = await client.generate(
@@ -102,7 +100,7 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
             "generate complete",
             extra={
                 "operation": "generate",
-                "duration_ms": round((time.perf_counter() - start) * 1000, 2),
+                "duration_ms": calculate_duration_ms(start),
             },
         )
         return GenerateResponse(text=text, model=model)
@@ -115,7 +113,7 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
 
 @app.post("/embed", response_model=EmbedResponse)
 async def embed(req: EmbedRequest) -> EmbedResponse:
-    model = req.model or EMBED_MODEL
+    model = req.model or settings.embed_model
     start = time.perf_counter()
     try:
         vector = await client.embed(text=req.text, model=model)
@@ -123,7 +121,7 @@ async def embed(req: EmbedRequest) -> EmbedResponse:
             "embed complete",
             extra={
                 "operation": "embed",
-                "duration_ms": round((time.perf_counter() - start) * 1000, 2),
+                "duration_ms": calculate_duration_ms(start),
             },
         )
         return EmbedResponse(embedding=vector, model=model)
@@ -136,7 +134,7 @@ async def embed(req: EmbedRequest) -> EmbedResponse:
 
 @app.post("/embed_batch", response_model=EmbedBatchResponse)
 async def embed_batch(req: EmbedBatchRequest) -> EmbedBatchResponse:
-    model = req.model or EMBED_MODEL
+    model = req.model or settings.embed_model
     try:
         embeddings = [
             await client.embed(text=t, model=model) for t in req.texts

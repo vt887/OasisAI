@@ -16,6 +16,8 @@ FROM python:${PYTHON_VERSION}-slim AS base
 # Re-declare ARGs inside the stage so they are in scope for RUN instructions
 ARG POETRY_VERSION
 WORKDIR /app
+COPY shared/ ./shared/
+COPY storage/ ./storage/
 RUN pip install --no-cache-dir "poetry==${POETRY_VERSION}"
 RUN poetry config virtualenvs.create false
 

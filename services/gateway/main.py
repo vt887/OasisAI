@@ -19,6 +19,7 @@ from shared.observability.logging import (
     request_logging_middleware,
 )
 from shared.resilience import async_retry
+from shared.timing import calculate_duration_ms
 
 logger = configure_logging("oasis-gateway", settings.log_level)
 
@@ -235,7 +236,8 @@ async def search(req: SearchRequest) -> SearchResponse:
     if settings.cache_enabled:
         _search_cache.set(key, hits)
     _metrics["queries"] += 1
-    _metrics["query_latency_total_ms"] += (time.perf_counter() - start) * 1000
+    _metrics["query_latency_total_ms"] += calculate_duration_ms(start)
+
     return SearchResponse(results=hits)
 
 

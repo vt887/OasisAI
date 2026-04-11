@@ -14,9 +14,9 @@ class OllamaClient:
     def __init__(
         self,
         base_url: str = settings.ollama_url,
-        default_model: str = "codellama",
-        embed_model: str = "nomic-embed-text",
-        timeout: float = 30.0,
+        default_model: str = settings.default_model,
+        embed_model: str = settings.embed_model,
+        timeout: float = settings.request_timeout_seconds,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._default_model = default_model

@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -17,16 +18,16 @@ from scanner import RepoScanner
 
 from shared.config import settings
 
-_BATCH_SIZE = 32
+logger = logging.getLogger(__name__)
 
 
 class IndexPipeline:
     def __init__(
         self,
-        chroma_host: str = "localhost",
-        chroma_port: int = 8000,
-        llm_url: str = "http://llm:8001",
-        embed_model: str = "nomic-embed-text",
+        chroma_host: str = settings.chroma_host,
+        chroma_port: int = settings.chroma_port,
+        llm_url: str = settings.llm_url,
+        embed_model: str = settings.embed_model,
     ) -> None:
         self._chroma_host = chroma_host
         self._chroma_port = chroma_port
@@ -41,29 +42,43 @@ class IndexPipeline:
         self._indexed_state = self._load_state()
 
     def index_repo(self, repo_path: str, repo_name: str) -> int:
+        """Index a repository and return number of chunks indexed.
+
+        This implementation streams chunks per-file and processes them in
+        batches to avoid building a large in-memory list of all chunks.
+        """
+        logger.info("Start indexing repo %s (%s)", repo_name, repo_path)
         self._ensure_initialized()
         scanner = RepoScanner(repo_path)
-        files = scanner.scan()
-
-        all_chunks: list[dict[str, Any]] = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
-            futures = [
-                ex.submit(
-                    self._chunk_file_if_changed, file_path, language, repo_name
-                )
-                for file_path, language in files
-            ]
-            for future in concurrent.futures.as_completed(futures):
-                all_chunks.extend(future.result())
 
         indexed = 0
-        for batch_start in range(0, len(all_chunks), _BATCH_SIZE):
-            batch = all_chunks[batch_start : batch_start + _BATCH_SIZE]
-            embeddings = self._embed_batch([c["content"] for c in batch])
+        batch: list[dict[str, Any]] = []
+
+        for file_path, language in scanner.scan():
+            chunks = self._chunk_file_if_changed(
+                str(file_path), language, repo_name
+            )
+            if not chunks:
+                logger.debug("No changes in %s; skipping", file_path)
+                continue
+
+            for c in chunks:
+                batch.append(c)
+                if len(batch) >= settings.batch_size:
+                    embeddings = self._embed_batch(
+                        [b["content"] for b in batch]
+                    )
+                    self._upsert_batch(batch, embeddings)
+                    indexed += len(batch)
+                    batch.clear()
+
+        # Flush remaining
+        if batch:
+            embeddings = self._embed_batch([b["content"] for b in batch])
             self._upsert_batch(batch, embeddings)
             indexed += len(batch)
-
         self._save_state()
+        logger.info("Indexing complete: %d chunks indexed", indexed)
         return indexed
 
     def _chunk_file_if_changed(
@@ -73,7 +88,7 @@ class IndexPipeline:
         key = f"{repo_name}:{file_path}"
         if self._indexed_state.get(key) == digest:
             return []
-        chunks = self._chunker.chunk_file(
+        chunks: list[dict[str, Any]] = self._chunker.chunk_file(
             file_path=file_path, repo=repo_name, language=language
         )
         self._indexed_state[key] = digest
@@ -83,11 +98,12 @@ class IndexPipeline:
         self._ensure_initialized()
         if self._http is None:
             raise RuntimeError("HTTP client is not available")
+        http_client: httpx.Client = self._http
 
         def embed_one(text: str) -> list[float]:
             for attempt in range(settings.retries + 1):
                 try:
-                    resp = self._http.post(
+                    resp = http_client.post(
                         f"{self._llm_url}/embed",
                         json={"text": text, "model": self._embed_model},
                         timeout=settings.request_timeout_seconds,
@@ -100,7 +116,9 @@ class IndexPipeline:
                     time.sleep(settings.backoff_seconds * (2**attempt))
             return []
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=settings.max_workers
+        ) as ex:
             return list(ex.map(embed_one, texts))
 
     def _upsert_batch(
@@ -135,12 +153,16 @@ class IndexPipeline:
         if self._initialized:
             return
         if self._http is None:
-            self._http = httpx.Client(timeout=120.0)
+            self._http = httpx.Client(
+                timeout=settings.http_client_timeout_seconds
+            )
         try:
             self._chroma = chromadb.HttpClient(
                 host=self._chroma_host,
                 port=self._chroma_port,
-                settings=Settings(anonymized_telemetry=False),
+                settings=Settings(
+                    anonymized_telemetry=settings.chroma_anonymized_telemetry
+                ),
             )
             self._collection = self._chroma.get_or_create_collection(
                 name="oasis_code", metadata={"hnsw:space": "cosine"}

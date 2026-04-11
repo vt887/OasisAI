@@ -5,10 +5,12 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
 
 from fastapi import Request
+
+from shared.timing import calculate_duration_ms
 
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
     "request_id", default="-"
@@ -32,12 +34,13 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload)
 
 
-class ContextAdapter(logging.LoggerAdapter):
+class ContextAdapter(logging.LoggerAdapter[logging.Logger]):
     def process(
-        self, msg: str, kwargs: dict[str, Any]
-    ) -> tuple[str, dict[str, Any]]:
+        self, msg: str, kwargs: MutableMapping[str, Any]
+    ) -> tuple[str, MutableMapping[str, Any]]:
         extra = kwargs.setdefault("extra", {})
-        extra.setdefault("service", self.extra.get("service"))
+        if self.extra is not None:
+            extra.setdefault("service", self.extra.get("service"))
         extra.setdefault("request_id", request_id_var.get())
         return msg, kwargs
 
@@ -69,7 +72,7 @@ async def request_logging_middleware(
     start = time.perf_counter()
     try:
         response = await call_next(request)
-        duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        duration_ms = calculate_duration_ms(start)
         response.headers["x-request-id"] = rid
         logger.info(
             f"{request.method} {request.url.path}",
@@ -77,7 +80,7 @@ async def request_logging_middleware(
         )
         return response
     except Exception:
-        duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        duration_ms = calculate_duration_ms(start)
         logger.exception(
             f"Unhandled exception {request.method} {request.url.path}",
             extra={"operation": request.url.path, "duration_ms": duration_ms},

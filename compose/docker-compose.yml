@@ -85,7 +85,7 @@ services:
       ollama:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8001/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=5).read()\" || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -114,7 +114,7 @@ services:
       llm:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8002/health || exit 1"]
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=5).read()\" || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -161,7 +161,7 @@ services:
       chroma:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8004/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8004/health', timeout=5).read()\" || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -194,7 +194,7 @@ services:
       llm:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5).read()\" || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

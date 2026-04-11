@@ -14,6 +14,7 @@ from shared.observability.logging import (
     configure_logging,
     request_logging_middleware,
 )
+from shared.timing import calculate_duration_ms
 
 logger = configure_logging("oasis-indexer")
 
@@ -71,7 +72,7 @@ async def index_repo(req: IndexRequest) -> IndexResponse:
             "index complete",
             extra={
                 "operation": "index",
-                "duration_ms": round((time.perf_counter() - start) * 1000, 2),
+                "duration_ms": calculate_duration_ms(start),
             },
         )
         return IndexResponse(repo_name=req.repo_name, chunks_indexed=count)

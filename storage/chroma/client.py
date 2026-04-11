@@ -3,6 +3,7 @@
 Provides a thin, typed interface around the ChromaDB HTTP client so that
 all OasisAI services interact with ChromaDB through a single abstraction.
 """
+
 from __future__ import annotations
 
 import logging
@@ -33,7 +34,10 @@ class ChromaClient:
         )
         self._collection = self._get_or_create_collection()
         logger.info(
-            "ChromaClient connected to %s:%s, collection=%s", host, port, collection_name
+            "ChromaClient connected to %s:%s, collection=%s",
+            host,
+            port,
+            collection_name,
         )
 
     # ------------------------------------------------------------------
@@ -114,4 +118,9 @@ class ChromaClient:
 
     def count(self) -> int:
         """Return the total number of stored chunks."""
-        return self._collection.count()
+        # The underlying client may return a value typed as Any; coerce to int
+        try:
+            return int(self._collection.count())
+        except Exception:
+            logger.exception("Unable to coerce collection.count() to int")
+            return 0

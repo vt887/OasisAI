@@ -152,12 +152,12 @@ test: test-unit test-integration
 .PHONY: test-unit
 test-unit:
 	@echo "Running unit tests..."
-	poetry run pytest -vvs --cov=services --cov-report xml:.coverage.unit.xml tests/
+	poetry run pytest -vvs --cov=services --cov-report xml:.coverage.unit.xml tests/unit/
 
 .PHONY: test-integration
 test-integration:
 	@echo "Running integration tests..."
-	poetry run pytest -vv --cov=services --cov-report xml:.coverage.integration.xml tests/test_integration.py
+	poetry run pytest -vv --cov=services --cov-report xml:.coverage.integration.xml tests/integration/
 
 .PHONY: test-coverage
 test-coverage:
