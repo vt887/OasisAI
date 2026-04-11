@@ -1,29 +1,43 @@
-"""oasis-ai agent FastAPI service."""
-
 from __future__ import annotations
 
-import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from agent import RefactorAgent
+from shared.observability.logging import (
+    configure_logging,
+    request_logging_middleware,
+)
 
-# ---------------------------------------------------------------------------
-# Bootstrap
-# ---------------------------------------------------------------------------
+logger = configure_logging("oasis-agent")
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("oasis-agent")
-
-app = FastAPI(title="oasis-agent", version="0.1.0")
+app = FastAPI(title="oasis-agent", version="0.2.0")
 agent = RefactorAgent()
 
 
-# ---------------------------------------------------------------------------
-# Schemas
-# ---------------------------------------------------------------------------
+@app.middleware("http")
+async def log_middleware(
+    request: Request, call_next: Callable[[Request], Awaitable[Any]]
+) -> Any:
+    return await request_logging_middleware(request, call_next, logger)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    logger.exception("agent unhandled", extra={"operation": request.url.path})
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "internal_error",
+            "message": "Unexpected server error",
+        },
+    )
 
 
 class AskRequest(BaseModel):
@@ -50,32 +64,26 @@ class RefactorResponse(BaseModel):
     sources: list[dict[str, Any]] = []
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-
 @app.get("/health")
-def health() -> dict[str, str]:
+async def health() -> dict[str, str]:
     return {"status": "ok", "service": "oasis-agent"}
 
 
 @app.post("/ask", response_model=AskResponse)
-def ask(req: AskRequest) -> AskResponse:
+async def ask(req: AskRequest) -> AskResponse:
     try:
-        result = agent.ask(
+        result = await agent.ask(
             question=req.question, repo=req.repo, top_k=req.top_k
         )
         return AskResponse(**result)
     except Exception as exc:
-        logger.exception("ask failed")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="ask failed") from exc
 
 
 @app.post("/refactor", response_model=RefactorResponse)
-def refactor(req: RefactorRequest) -> RefactorResponse:
+async def refactor(req: RefactorRequest) -> RefactorResponse:
     try:
-        result = agent.refactor(
+        result = await agent.refactor(
             instruction=req.instruction,
             repo=req.repo,
             target_file=req.target_file,
@@ -83,5 +91,4 @@ def refactor(req: RefactorRequest) -> RefactorResponse:
         )
         return RefactorResponse(**result)
     except Exception as exc:
-        logger.exception("refactor failed")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="refactor failed") from exc

@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env.local", extra="ignore")
+
+    service_name: str = "oasis-service"
+    log_level: str = "INFO"
+
+    ollama_url: str = "http://ollama:11434"
+    chroma_path: str = "/data/chroma"
+    chroma_host: str = "chroma"
+    chroma_port: int = 8000
+
+    llm_url: str = "http://llm:8001"
+    agent_url: str = "http://agent:8004"
+    graph_url: str = "http://graph:8003"
+    indexer_url: str = "http://indexer:8002"
+
+    request_timeout_seconds: float = 30.0
+    readiness_timeout_seconds: float = 5.0
+    retries: int = 3
+    backoff_seconds: float = 0.5
+
+    cache_enabled: bool = True
+    cache_ttl_seconds: int = 15
+    embed_cache_size: int = 4096
+
+
+settings = Settings()
