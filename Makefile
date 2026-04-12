@@ -1,4 +1,4 @@
-PROJECT_NAME ?= oasis-ai
+PROJECT_NAME  ?= oasis-ai
 IMAGE_TAG     ?= latest
 SERVICES      := gateway indexer llm graph agent
 
@@ -167,8 +167,12 @@ test-coverage:
 # ============================================================
 # Docker
 # ============================================================
-COMPOSE := PYTHON_VERSION=$(PYTHON_VERSION) POETRY_VERSION=$(POETRY_VERSION) \
-           docker-compose -f compose/docker-compose.yml
+## Enable BuildKit and Compose CLI build for faster, cacheable builds.
+## These variables are set only for the docker-compose invocation made by
+## the Makefile targets.
+COMPOSE := DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 \
+		   PYTHON_VERSION=$(PYTHON_VERSION) POETRY_VERSION=$(POETRY_VERSION) \
+		   docker-compose -f compose/docker-compose.yml
 
 .PHONY: docker-build
 docker-build:
@@ -181,6 +185,8 @@ docker-build:
 docker-up:
 	@echo "Starting Docker stack..."
 	$(COMPOSE) up -d
+	@echo "Ensuring Ollama models are available..."
+	$(COMPOSE) run --rm ollama-init
 	@sleep 3
 	$(COMPOSE) ps
 
@@ -307,7 +313,7 @@ restart: docker-down docker-up
 .PHONY: validate
 validate:
 	@echo "Running validation..."
-	python scripts/validate.py
+	poetry run python scripts/validate.py
 
 .PHONY: verify
 verify:
@@ -421,6 +427,5 @@ check-health:
 	@curl -s http://localhost:8002/health | python -m json.tool $(QUIET_ERR) || echo "Indexer: not responding"
 	@curl -s http://localhost:8003/health | python -m json.tool $(QUIET_ERR) || echo "Graph: not responding"
 	@curl -s http://localhost:8004/health | python -m json.tool $(QUIET_ERR) || echo "Agent: not responding"
-
 
 .DEFAULT_GOAL := help

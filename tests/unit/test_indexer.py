@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from shared.config import settings
 
 # Add the service to path for direct import
 sys.path.insert(
@@ -16,8 +17,6 @@ sys.path.insert(
 from chunker import CodeChunker, _make_id
 from pipeline import IndexPipeline
 from scanner import RepoScanner
-
-from shared.config import settings
 
 
 class TestCodeChunker:
@@ -170,7 +169,7 @@ class TestIndexPipeline:
         assert pipeline._http is not None
         assert pipeline._initialized
 
-    @patch("pipeline.chromadb.HttpClient")
+    @patch("pipeline.ChromaClient")
     @patch("pipeline.httpx.Client")
     def test_ensure_initialized_creates_chroma_client(
         self,
@@ -182,10 +181,6 @@ class TestIndexPipeline:
         mock_http_class.return_value = mock_http_instance
         mock_chroma_instance = MagicMock()
         mock_chroma_class.return_value = mock_chroma_instance
-        mock_collection = MagicMock()
-        mock_chroma_instance.get_or_create_collection.return_value = (
-            mock_collection
-        )
 
         pipeline = IndexPipeline(
             chroma_host="chroma-host",
@@ -197,9 +192,9 @@ class TestIndexPipeline:
         call_kwargs = mock_chroma_class.call_args[1]
         assert call_kwargs["host"] == "chroma-host"
         assert call_kwargs["port"] == 9000
-        assert pipeline._collection == mock_collection
+        assert pipeline._collection == mock_chroma_instance
 
-    @patch("pipeline.chromadb.HttpClient")
+    @patch("pipeline.ChromaClient")
     @patch("pipeline.httpx.Client")
     def test_ensure_initialized_handles_chroma_error(
         self,
@@ -219,7 +214,7 @@ class TestIndexPipeline:
         assert pipeline._collection is None
         assert pipeline._initialized
 
-    @patch("pipeline.chromadb.HttpClient")
+    @patch("pipeline.ChromaClient")
     @patch("pipeline.httpx.Client")
     def test_ensure_initialized_is_idempotent(
         self,
@@ -231,10 +226,6 @@ class TestIndexPipeline:
         mock_http_class.return_value = mock_http_instance
         mock_chroma_instance = MagicMock()
         mock_chroma_class.return_value = mock_chroma_instance
-        mock_collection = MagicMock()
-        mock_chroma_instance.get_or_create_collection.return_value = (
-            mock_collection
-        )
 
         pipeline = IndexPipeline()
         pipeline._ensure_initialized()
@@ -261,3 +252,16 @@ class TestIndexPipeline:
 
         with pytest.raises(RuntimeError, match="ChromaDB collection"):
             pipeline._upsert_batch([{"id": "1", "content": "test"}], [[0.1]])
+
+    def test_mark_batch_indexed_updates_state(self) -> None:
+        pipeline = IndexPipeline()
+        pipeline._mark_batch_indexed(
+            [
+                {
+                    "_state_key": "sample:/tmp/file.py",
+                    "_state_digest": "abc123",
+                }
+            ]
+        )
+
+        assert pipeline._indexed_state == {"sample:/tmp/file.py": "abc123"}

@@ -67,15 +67,27 @@ class OllamaClient:
             if cached is not None:
                 return cached
 
-        payload = {"model": mdl, "prompt": text}
+        payload = {"model": mdl, "input": text}
 
         async def _call() -> list[float]:
             response = await self._client.post(
-                f"{self._base}/api/embeddings", json=payload
+                f"{self._base}/api/embed", json=payload
             )
             response.raise_for_status()
             data = response.json()
-            return list(data.get("embedding", []))
+            embeddings = (
+                data.get("embeddings") if isinstance(data, dict) else []
+            )
+            if isinstance(embeddings, list) and embeddings:
+                first = embeddings[0]
+                if isinstance(first, list):
+                    return [float(value) for value in first]
+            embedding = data.get("embedding") if isinstance(data, dict) else []
+            return (
+                [float(value) for value in embedding]
+                if isinstance(embedding, list)
+                else []
+            )
 
         result = await async_retry(
             _call,

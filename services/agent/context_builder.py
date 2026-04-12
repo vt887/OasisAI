@@ -30,6 +30,14 @@ class ContextBundle(dict[str, Any]):
     """
 
 
+def _llm_base_url(url: str) -> str:
+    base_url = url.rstrip("/")
+    for suffix in ("/generate", "/embed", "/embed_batch"):
+        if base_url.endswith(suffix):
+            return base_url[: -len(suffix)]
+    return base_url
+
+
 async def build_context(
     query: str,
     max_tokens: int = 1500,
@@ -40,9 +48,7 @@ async def build_context(
     chroma = ChromaClient()
 
     emb = await _embed_query(query)
-    where: dict[str, Any] | None = None
-    if repo_filters:
-        where = {"repo": repo_filters}
+    where = _build_repo_filter(repo_filters)
 
     hits = chroma.query(query_embedding=emb, top_k=top_k, where=where)
 
@@ -128,6 +134,16 @@ async def build_context(
     return bundle
 
 
+def _build_repo_filter(
+    repo_filters: list[str] | None,
+) -> dict[str, Any] | None:
+    if not repo_filters:
+        return None
+    if len(repo_filters) == 1:
+        return {"repo": repo_filters[0]}
+    return {"repo": {"$in": repo_filters}}
+
+
 async def _embed_query(query: str) -> list[float]:
     async with httpx.AsyncClient(
         timeout=settings.request_timeout_seconds
@@ -135,7 +151,7 @@ async def _embed_query(query: str) -> list[float]:
 
         async def _call() -> list[float]:
             response = await client.post(
-                f"{settings.llm_url}/embed",
+                f"{_llm_base_url(settings.llm_url)}/embed",
                 json={"text": query, "model": settings.embed_model},
             )
             response.raise_for_status()

@@ -3,13 +3,27 @@
 
 from __future__ import annotations
 
+import importlib
+import os
 import sys
 import time
+from pathlib import Path
 
 import httpx
 
-BASE_URL = "http://localhost:8000"
-TIMEOUT = 30.0
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+settings = importlib.import_module("shared.config").settings
+
+BASE_URL = os.getenv("OASIS_VALIDATE_URL", "http://localhost:8080")
+TIMEOUT = float(
+    os.getenv(
+        "OASIS_VALIDATE_TIMEOUT",
+        str(max(settings.http_client_timeout_seconds, 240.0)),
+    )
+)
 
 
 def test_health(client: httpx.Client) -> bool:
@@ -28,7 +42,7 @@ def test_index(client: httpx.Client) -> bool:
     """Test indexing a repository."""
     try:
         payload = {"repo_path": "/repos/sample-app", "repo_name": "sample-app"}
-        resp = client.post(f"{BASE_URL}/index", json=payload, timeout=60.0)
+        resp = client.post(f"{BASE_URL}/index", json=payload, timeout=TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         chunks_indexed = data.get("chunks_indexed", 0)
@@ -66,7 +80,7 @@ def test_ask(client: httpx.Client) -> bool:
             "repo": "sample-app",
             "top_k": 3,
         }
-        resp = client.post(f"{BASE_URL}/ask", json=payload, timeout=60.0)
+        resp = client.post(f"{BASE_URL}/ask", json=payload, timeout=TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         answer = data.get("answer", "")
@@ -91,7 +105,9 @@ def test_refactor(client: httpx.Client) -> bool:
             "repo": "sample-app",
             "top_k": 3,
         }
-        resp = client.post(f"{BASE_URL}/refactor", json=payload, timeout=60.0)
+        resp = client.post(
+            f"{BASE_URL}/refactor", json=payload, timeout=TIMEOUT
+        )
         resp.raise_for_status()
         data = resp.json()
         plan = data.get("plan", "")

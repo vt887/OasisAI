@@ -10,13 +10,10 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, cast
 
-import chromadb
 import httpx
-from chromadb.api import ClientAPI
-from chromadb.api.models.Collection import Collection
-from chromadb.config import Settings
 
 from shared.config import settings
+from storage.chroma.client import ChromaClient
 
 _CHUNKER_MODULE: ModuleType = importlib.import_module(
     f"{__package__}.chunker" if __package__ else "chunker"
@@ -42,8 +39,8 @@ class IndexPipeline:
         self._embed_model = embed_model
         self._chunker = _CHUNKER_MODULE.CodeChunker()
         self._http: httpx.Client | None = None
-        self._chroma: ClientAPI | None = None
-        self._collection: Collection | None = None
+        self._chroma: ChromaClient | None = None
+        self._collection: ChromaClient | None = None
         self._initialized = False
         self._hash_file = Path(".oasis_index_state.json")
         self._indexed_state = self._load_state()
@@ -76,6 +73,7 @@ class IndexPipeline:
                         [b["content"] for b in batch]
                     )
                     self._upsert_batch(batch, embeddings)
+                    self._mark_batch_indexed(batch)
                     indexed += len(batch)
                     batch.clear()
 
@@ -83,6 +81,7 @@ class IndexPipeline:
         if batch:
             embeddings = self._embed_batch([b["content"] for b in batch])
             self._upsert_batch(batch, embeddings)
+            self._mark_batch_indexed(batch)
             indexed += len(batch)
         self._save_state()
         logger.info("Indexing complete: %d chunks indexed", indexed)
@@ -120,7 +119,9 @@ class IndexPipeline:
         chunks: list[dict[str, Any]] = self._chunker.chunk_file(
             file_path=file_path, repo=repo_name, language=language
         )
-        self._indexed_state[key] = digest
+        for chunk in chunks:
+            chunk["_state_key"] = key
+            chunk["_state_digest"] = digest
         return chunks
 
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
@@ -172,13 +173,20 @@ class IndexPipeline:
                         "start_line": int(c.get("start_line", 0) or 0),
                         "end_line": int(c.get("end_line", 0) or 0),
                         "chunk_index": int(c.get("chunk_index", 0) or 0),
-                        "symbols": c.get("symbols", []),
+                        "symbols": json.dumps(c.get("symbols", [])),
                         "token_count": int(c.get("token_count", 0) or 0),
                     }
                     for c in chunks
                 ],
             ),
         )
+
+    def _mark_batch_indexed(self, chunks: list[dict[str, Any]]) -> None:
+        for chunk in chunks:
+            key = chunk.get("_state_key")
+            digest = chunk.get("_state_digest")
+            if isinstance(key, str) and isinstance(digest, str):
+                self._indexed_state[key] = digest
 
     def close(self) -> None:
         if self._http is not None:
@@ -192,17 +200,11 @@ class IndexPipeline:
                 timeout=settings.http_client_timeout_seconds
             )
         try:
-            self._chroma = chromadb.HttpClient(
+            self._chroma = ChromaClient(
                 host=self._chroma_host,
                 port=self._chroma_port,
-                settings=Settings(
-                    anonymized_telemetry=settings.chroma_anonymized_telemetry
-                ),
             )
-            self._collection = self._chroma.get_or_create_collection(
-                name=settings.chroma_collection,
-                metadata={"hnsw:space": "cosine"},
-            )
+            self._collection = self._chroma
         except Exception:
             self._chroma = None
             self._collection = None

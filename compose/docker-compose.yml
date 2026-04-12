@@ -37,17 +37,24 @@ services:
       ollama:
         condition: service_healthy
     restart: "no"
-    entrypoint: [ "/bin/sh", "-c" ]
-    command: >
-      echo "Waiting for Ollama..." &&
-      until curl -s http://ollama:11434/api/tags > /dev/null; do
-        sleep 2;
-      done &&
-      echo "Pulling models..." &&
-      curl -s http://ollama:11434/api/pull -d '{"name":"llama3.1"}' &&
-      curl -s http://ollama:11434/api/pull -d '{"name":"qwen2.5-coder"}' &&
-      curl -s http://ollama:11434/api/pull -d '{"name":"nomic-embed-text"}' &&
-      echo "All models ready."
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+          echo "Waiting for Ollama..."
+          until curl -fsS http://ollama:11434/api/tags > /dev/null; do
+            sleep 2
+          done
+          echo "Pulling models..."
+          curl -fsS http://ollama:11434/api/pull \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"llama3.2:1b"}'
+          curl -fsS http://ollama:11434/api/pull \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"nomic-embed-text"}'
+          echo
+          curl -fsS http://ollama:11434/api/tags
+          echo "All models ready."
 
   ollama:
     image: ollama/ollama:latest
@@ -79,7 +86,7 @@ services:
       - "8001:8001"
     environment:
       - OLLAMA_URL=http://ollama:11434
-      - LLM_MODEL=codellama
+      - DEFAULT_MODEL=llama3.2:1b
       - EMBED_MODEL=nomic-embed-text
     depends_on:
       ollama:
@@ -151,8 +158,8 @@ services:
       - CHROMA_HOST=chroma
       - CHROMA_PORT=8000
       - GRAPH_URL=http://graph:8003/graph
-      - LLM_URL=http://llm:8001/generate
-      - LLM_MODEL=codellama
+      - LLM_URL=http://llm:8001
+      - DEFAULT_MODEL=llama3.2:1b
     depends_on:
       llm:
         condition: service_healthy

@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
+from uuid import UUID
 
 import chromadb
 import httpx
@@ -42,6 +43,62 @@ _search_cache: TTLCache[str, list[dict[str, Any]]] = TTLCache(
     max_size=512, ttl_seconds=settings.cache_ttl_seconds
 )
 _metrics: dict[str, float] = {"queries": 0, "query_latency_total_ms": 0}
+
+
+def _get_chroma_collection_id() -> UUID:
+    tenant = _chroma.tenant
+    database = _chroma.database
+    raw = cast(
+        dict[str, Any],
+        _chroma._server._make_request(  # type: ignore[attr-defined]
+            "post",
+            f"/tenants/{tenant}/databases/{database}/collections",
+            json={
+                "name": settings.chroma_collection,
+                "metadata": {"hnsw:space": "cosine"},
+                "configuration": None,
+                "get_or_create": True,
+            },
+        ),
+    )
+    collection_id = raw.get("id")
+    if not isinstance(collection_id, str):
+        raise RuntimeError("Chroma collection response missing id")
+    return UUID(collection_id)
+
+
+def _query_chroma(
+    query_embedding: list[float], top_k: int, repo: str | None
+) -> dict[str, Any]:
+    tenant = _chroma.tenant
+    database = _chroma.database
+    collection_id = _get_chroma_collection_id()
+    include_param = cast(Any, ["documents", "metadatas", "distances"])
+    return cast(
+        dict[str, Any],
+        _chroma._server._make_request(  # type: ignore[attr-defined]
+            "post",
+            f"/tenants/{tenant}/databases/{database}/collections/{collection_id}/query",
+            json={
+                "query_embeddings": [query_embedding],
+                "n_results": top_k,
+                "where": {"repo": repo} if repo else None,
+                "where_document": None,
+                "include": include_param,
+            },
+        ),
+    )
+
+
+def _count_chroma_documents() -> int:
+    tenant = _chroma.tenant
+    database = _chroma.database
+    collection_id = _get_chroma_collection_id()
+    raw = _chroma._server._make_request(  # type: ignore[attr-defined]
+        "get",
+        f"/tenants/{tenant}/databases/{database}/collections/{collection_id}/count",
+    )
+    return int(raw)
 
 
 @app.middleware("http")
@@ -177,9 +234,7 @@ async def metrics() -> dict[str, Any]:
         if _metrics["queries"] == 0
         else _metrics["query_latency_total_ms"] / _metrics["queries"]
     )
-    docs = _chroma.get_or_create_collection(
-        name=settings.chroma_collection, metadata={"hnsw:space": "cosine"}
-    ).count()
+    docs = _count_chroma_documents()
     return {
         "indexed_documents": docs,
         "queries": int(_metrics["queries"]),
@@ -202,6 +257,19 @@ async def ask(req: AskRequest) -> AskResponse:
     return AskResponse(**data)
 
 
+@app.get("/ask")
+async def ask_help() -> dict[str, Any]:
+    return {
+        "message": "Use POST /ask with JSON body",
+        "example": {
+            "question": "How does authentication work?",
+            "repo": "sample-app",
+            "top_k": 5,
+            "debug": False,
+        },
+    }
+
+
 @app.post("/search", response_model=SearchResponse)
 async def search(req: SearchRequest) -> SearchResponse:
     start = time.perf_counter()
@@ -215,15 +283,8 @@ async def search(req: SearchRequest) -> SearchResponse:
         f"{settings.llm_url}/embed", {"text": req.query}, "embed"
     )
     query_embedding = embed_resp.get("embedding", [])
-    collection = _chroma.get_or_create_collection(
-        name=settings.chroma_collection, metadata={"hnsw:space": "cosine"}
-    )
-    include_param = cast(Any, ["documents", "metadatas", "distances"])
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=req.top_k,
-        where={"repo": req.repo} if req.repo else None,
-        include=include_param,
+    results = _query_chroma(
+        cast(list[float], query_embedding), req.top_k, req.repo
     )
 
     hits: list[dict[str, Any]] = []

@@ -61,6 +61,12 @@ class TestGatewayAsk:
         resp = client.post("/ask", json={"question": ""})
         assert resp.status_code == 422
 
+    def test_ask_get_returns_usage(self, client: TestClient) -> None:
+        resp = client.get("/ask")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["message"] == "Use POST /ask with JSON body"
+
     def test_ask_upstream_error_returns_503(self, client: TestClient) -> None:
         import httpx
 
@@ -101,6 +107,44 @@ class TestGatewayRefactor:
     ) -> None:
         resp = client.post("/refactor", json={"instruction": ""})
         assert resp.status_code == 422
+
+
+class TestGatewaySearch:
+    def test_search_queries_chroma_via_raw_api(
+        self, client: TestClient
+    ) -> None:
+        embed_response = MagicMock()
+        embed_response.status_code = 200
+        embed_response.json.return_value = {"embedding": [0.1, 0.2, 0.3]}
+        embed_response.raise_for_status = MagicMock()
+
+        mock_server = MagicMock()
+        mock_server._make_request.side_effect = [
+            {"id": "12345678-1234-5678-1234-567812345678"},
+            {
+                "ids": [["chunk-1"]],
+                "documents": [["def foo(): pass"]],
+                "metadatas": [[{"repo": "myrepo", "file_path": "a.py"}]],
+                "distances": [[0.12]],
+            },
+        ]
+        gateway_main._chroma._server = mock_server
+        gateway_main._chroma.tenant = "default_tenant"
+        gateway_main._chroma.database = "default_database"
+
+        with patch.object(
+            gateway_main._http, "post", return_value=embed_response
+        ):
+            resp = client.post(
+                "/search",
+                json={"query": "foo", "repo": "myrepo", "top_k": 3},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["results"][0]["id"] == "chunk-1"
+        assert data["results"][0]["content"] == "def foo(): pass"
+        assert mock_server._make_request.call_count == 2
 
 
 class TestGatewayIndex:

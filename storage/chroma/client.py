@@ -6,8 +6,10 @@ all OasisAI services interact with ChromaDB through a single abstraction.
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any
+from typing import Any, cast
+from uuid import UUID
 
 import chromadb
 from chromadb.config import Settings
@@ -33,7 +35,6 @@ class ChromaClient:
             port=port,
             settings=Settings(anonymized_telemetry=False),
         )
-        self._collection = self._get_or_create_collection()
         logger.info(
             "ChromaClient connected to %s:%s, collection=%s",
             host,
@@ -45,11 +46,26 @@ class ChromaClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_or_create_collection(self) -> Any:
-        return self._client.get_or_create_collection(
-            name=self._collection_name,
-            metadata={"hnsw:space": "cosine"},
+    def _get_or_create_collection_id(self) -> UUID:
+        tenant = self._client.tenant
+        database = self._client.database
+        raw = cast(
+            dict[str, Any],
+            self._client._server._make_request(  # type: ignore[attr-defined]
+                "post",
+                f"/tenants/{tenant}/databases/{database}/collections",
+                json={
+                    "name": self._collection_name,
+                    "metadata": {"hnsw:space": "cosine"},
+                    "configuration": None,
+                    "get_or_create": True,
+                },
+            ),
         )
+        collection_id = raw.get("id")
+        if not isinstance(collection_id, str):
+            raise RuntimeError("Chroma collection response missing id")
+        return UUID(collection_id)
 
     # ------------------------------------------------------------------
     # Write operations
@@ -63,17 +79,36 @@ class ChromaClient:
         metadatas: list[dict[str, Any]],
     ) -> None:
         """Upsert a batch of code chunks with their embeddings."""
-        self._collection.upsert(
-            ids=ids,
-            embeddings=embeddings,
-            documents=documents,
-            metadatas=metadatas,
+        tenant = self._client.tenant
+        database = self._client.database
+        collection_id = self._get_or_create_collection_id()
+        self._client._server._make_request(  # type: ignore[attr-defined]
+            "post",
+            f"/tenants/{tenant}/databases/{database}/collections/{collection_id}/upsert",
+            json={
+                "ids": ids,
+                "embeddings": embeddings,
+                "metadatas": metadatas,
+                "documents": documents,
+                "uris": None,
+            },
         )
         logger.debug("Upserted %d chunks", len(ids))
 
     def delete_by_repo(self, repo: str) -> None:
         """Remove all chunks belonging to a given repository."""
-        self._collection.delete(where={"repo": repo})
+        tenant = self._client.tenant
+        database = self._client.database
+        collection_id = self._get_or_create_collection_id()
+        self._client._server._make_request(  # type: ignore[attr-defined]
+            "post",
+            f"/tenants/{tenant}/databases/{database}/collections/{collection_id}/delete",
+            json={
+                "ids": None,
+                "where": {"repo": repo},
+                "where_document": None,
+            },
+        )
         logger.info("Deleted all chunks for repo=%s", repo)
 
     # ------------------------------------------------------------------
@@ -90,15 +125,23 @@ class ChromaClient:
 
         Returns a list of dicts with keys: id, document, metadata, distance.
         """
-        kwargs: dict[str, Any] = {
-            "query_embeddings": [query_embedding],
-            "n_results": top_k,
-            "include": ["documents", "metadatas", "distances"],
-        }
-        if where:
-            kwargs["where"] = where
-
-        results = self._collection.query(**kwargs)
+        tenant = self._client.tenant
+        database = self._client.database
+        collection_id = self._get_or_create_collection_id()
+        results = cast(
+            dict[str, Any],
+            self._client._server._make_request(  # type: ignore[attr-defined]
+                "post",
+                f"/tenants/{tenant}/databases/{database}/collections/{collection_id}/query",
+                json={
+                    "query_embeddings": [query_embedding],
+                    "n_results": top_k,
+                    "where": where,
+                    "where_document": None,
+                    "include": ["documents", "metadatas", "distances"],
+                },
+            ),
+        )
 
         hits: list[dict[str, Any]] = []
         ids = results.get("ids", [[]])[0]
@@ -107,11 +150,19 @@ class ChromaClient:
         dists = results.get("distances", [[]])[0]
 
         for chunk_id, doc, meta, dist in zip(ids, docs, metas, dists):
+            decoded_meta = meta if isinstance(meta, dict) else {}
+            symbols = decoded_meta.get("symbols")
+            if isinstance(symbols, str):
+                try:
+                    decoded_symbols = json.loads(symbols)
+                except json.JSONDecodeError:
+                    decoded_symbols = symbols
+                decoded_meta = {**decoded_meta, "symbols": decoded_symbols}
             hits.append(
                 {
                     "id": chunk_id,
                     "document": doc,
-                    "metadata": meta,
+                    "metadata": decoded_meta,
                     "distance": dist,
                 }
             )
@@ -120,7 +171,17 @@ class ChromaClient:
     def count(self) -> int:
         """Return the total number of stored chunks."""
         try:
-            return int(self._collection.count())
+            tenant = self._client.tenant
+            database = self._client.database
+            collection_id = self._get_or_create_collection_id()
+            raw = self._client._server._make_request(  # type: ignore[attr-defined]
+                "get",
+                f"/tenants/{tenant}/databases/{database}/collections/{collection_id}/count",
+            )
+            return int(raw)
         except Exception:
             logger.exception("Unable to coerce collection.count() to int")
             return 0
+
+    def heartbeat(self) -> Any:
+        return self._client.heartbeat()

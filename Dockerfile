@@ -1,39 +1,52 @@
 # ============================================================
-# OasisAI — Multistage root Dockerfile
+# OasisAI — Multistage root Dockerfile (OPTIMIZED FOR SHARED DEPS)
 # Build any service with: docker build --target <service> .
 # Used by compose/docker-compose.yml via `context: ..`
-#
-# Versions are driven by repo version files:
-#   .python-version  → PYTHON_VERSION (e.g. 3.12)
-#   .tool-versions   → POETRY_VERSION (e.g. 2.2.1)
 # ============================================================
-
-# Declared before FROM so they can be used in FROM itself
 ARG PYTHON_VERSION=3.12
 ARG POETRY_VERSION=2.2.1
 
-FROM python:${PYTHON_VERSION}-slim AS base
-# Re-declare ARGs inside the stage so they are in scope for RUN instructions
+# ============================================================
+# Deps stage — install Poetry only, leave package installation
+# to per-service stages so images only contain required deps.
+# ============================================================
+FROM python:${PYTHON_VERSION}-slim AS deps
 ARG POETRY_VERSION
 WORKDIR /app
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/pypoetry \
+    pip install --no-cache-dir "poetry==${POETRY_VERSION}" && \
+    poetry config virtualenvs.create false
+
+
+# ============================================================
+# Base stage — reuse deps stage so installed console scripts
+# and site-packages remain available in runtime images.
+# ============================================================
+FROM deps AS base
 COPY shared/ ./shared/
 COPY storage/ ./storage/
-RUN pip install --no-cache-dir "poetry==${POETRY_VERSION}"
-RUN poetry config virtualenvs.create false
 
 # ============================================================
-# Dev / test image — uses root pyproject
+# Dev / test image
 # ============================================================
-FROM base AS development
+FROM deps AS development
+WORKDIR /app
 COPY pyproject.toml poetry.lock ./
-RUN poetry install --with dev --no-interaction --no-ansi
+RUN --mount=type=cache,target=/root/.cache/pypoetry \
+    poetry install --with dev --no-interaction --no-ansi
 COPY . .
-CMD ["python", "-m", "pytest", "tests/"]
+CMD ["python", "-m", "pytest", "tests/unit/"]
 
 # ============================================================
-FROM base AS gateway
+# Gateway service
+# ============================================================
+FROM deps AS gateway
+WORKDIR /app
 COPY services/gateway/pyproject.toml services/gateway/poetry.lock ./
-RUN poetry install --only main --no-interaction --no-ansi
+RUN --mount=type=cache,target=/root/.cache/pypoetry \
+    poetry install --only main --no-interaction --no-ansi
 COPY services/gateway/ .
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
@@ -41,9 +54,13 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
 
 # ============================================================
-FROM base AS indexer
+# Indexer service
+# ============================================================
+FROM deps AS indexer
+WORKDIR /app
 COPY services/indexer/pyproject.toml services/indexer/poetry.lock ./
-RUN poetry install --only main --no-interaction --no-ansi
+RUN --mount=type=cache,target=/root/.cache/pypoetry \
+    poetry install --only main --no-interaction --no-ansi
 COPY services/indexer/ .
 VOLUME ["/repos"]
 EXPOSE 8002
@@ -52,9 +69,13 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002"]
 
 # ============================================================
-FROM base AS llm
+# LLM service
+# ============================================================
+FROM deps AS llm
+WORKDIR /app
 COPY services/llm/pyproject.toml services/llm/poetry.lock ./
-RUN poetry install --only main --no-interaction --no-ansi
+RUN --mount=type=cache,target=/root/.cache/pypoetry \
+    poetry install --only main --no-interaction --no-ansi
 COPY services/llm/ .
 EXPOSE 8001
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
@@ -62,9 +83,13 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
 
 # ============================================================
-FROM base AS graph
+# Graph service
+# ============================================================
+FROM deps AS graph
+WORKDIR /app
 COPY services/graph/pyproject.toml services/graph/poetry.lock ./
-RUN poetry lock --no-cache && poetry install --only main --no-interaction --no-ansi
+RUN --mount=type=cache,target=/root/.cache/pypoetry \
+    poetry install --only main --no-interaction --no-ansi
 COPY services/graph/ .
 EXPOSE 8003
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
@@ -72,9 +97,13 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8003"]
 
 # ============================================================
-FROM base AS agent
+# Agent service
+# ============================================================
+FROM deps AS agent
+WORKDIR /app
 COPY services/agent/pyproject.toml services/agent/poetry.lock ./
-RUN poetry lock --no-cache && poetry install --only main --no-interaction --no-ansi
+RUN --mount=type=cache,target=/root/.cache/pypoetry \
+    poetry install --only main --no-interaction --no-ansi
 COPY services/agent/ .
 EXPOSE 8004
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 \

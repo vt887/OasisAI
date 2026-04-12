@@ -20,7 +20,17 @@ CHROMA_SEARCH_URL = (
     f"http://{settings.chroma_host}:{settings.chroma_port}/search"
 )
 GRAPH_URL = f"{settings.graph_url}/graph"
-LLM_URL = f"{settings.llm_url}/generate"
+
+
+def _llm_base_url(url: str) -> str:
+    base_url = url.rstrip("/")
+    for suffix in ("/generate", "/embed", "/embed_batch"):
+        if base_url.endswith(suffix):
+            return base_url[: -len(suffix)]
+    return base_url
+
+
+LLM_URL = f"{_llm_base_url(settings.llm_url)}/generate"
 
 _REFACTOR_SYSTEM = (
     "You are an expert software engineer. Output plan and unified diffs only."
