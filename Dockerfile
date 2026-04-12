@@ -42,7 +42,7 @@ CMD ["python", "-m", "pytest", "tests/unit/"]
 # ============================================================
 # Gateway service
 # ============================================================
-FROM deps AS gateway
+FROM base AS gateway
 WORKDIR /app
 COPY services/gateway/pyproject.toml services/gateway/poetry.lock ./
 RUN --mount=type=cache,target=/root/.cache/pypoetry \
@@ -56,7 +56,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
 # ============================================================
 # Indexer service
 # ============================================================
-FROM deps AS indexer
+FROM base AS indexer
 WORKDIR /app
 COPY services/indexer/pyproject.toml services/indexer/poetry.lock ./
 RUN --mount=type=cache,target=/root/.cache/pypoetry \
@@ -71,7 +71,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002"]
 # ============================================================
 # LLM service
 # ============================================================
-FROM deps AS llm
+FROM base AS llm
 WORKDIR /app
 COPY services/llm/pyproject.toml services/llm/poetry.lock ./
 RUN --mount=type=cache,target=/root/.cache/pypoetry \
@@ -85,7 +85,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
 # ============================================================
 # Graph service
 # ============================================================
-FROM deps AS graph
+FROM base AS graph
 WORKDIR /app
 COPY services/graph/pyproject.toml services/graph/poetry.lock ./
 RUN --mount=type=cache,target=/root/.cache/pypoetry \
@@ -99,7 +99,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8003"]
 # ============================================================
 # Agent service
 # ============================================================
-FROM deps AS agent
+FROM base AS agent
 WORKDIR /app
 COPY services/agent/pyproject.toml services/agent/poetry.lock ./
 RUN --mount=type=cache,target=/root/.cache/pypoetry \

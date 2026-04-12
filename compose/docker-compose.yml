@@ -22,7 +22,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - chroma_data:/chroma/chroma
+      - chroma_data:/data
     environment:
       - ANONYMIZED_TELEMETRY=false
     healthcheck:
@@ -86,7 +86,7 @@ services:
       - "8001:8001"
     environment:
       - OLLAMA_URL=http://ollama:11434
-      - DEFAULT_MODEL=llama3.2:1b
+      - DEFAULT_MODEL=qwen2.5-coder
       - EMBED_MODEL=nomic-embed-text
     depends_on:
       ollama:
@@ -115,6 +115,7 @@ services:
       - EMBED_MODEL=nomic-embed-text
     volumes:
       - ../repos:/repos:ro
+      - ${HOST_PROJECTS_ROOT:-..}:/workspace:ro
     depends_on:
       chroma:
         condition: service_healthy
@@ -137,6 +138,8 @@ services:
         POETRY_VERSION: ${POETRY_VERSION:-2.2.1}
     ports:
       - "8003:8003"
+    volumes:
+      - ${HOST_PROJECTS_ROOT:-..}:/workspace:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8003/health', timeout=5).read()\" || exit 1"]
       interval: 10s
@@ -159,7 +162,7 @@ services:
       - CHROMA_PORT=8000
       - GRAPH_URL=http://graph:8003/graph
       - LLM_URL=http://llm:8001
-      - DEFAULT_MODEL=llama3.2:1b
+      - DEFAULT_MODEL=qwen2.5-coder
     depends_on:
       llm:
         condition: service_healthy

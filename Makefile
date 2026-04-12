@@ -2,6 +2,9 @@ PROJECT_NAME  ?= oasis-ai
 IMAGE_TAG     ?= latest
 SERVICES      := gateway indexer llm graph agent
 
+# Host path where projects are mounted (can be overridden from environment)
+HOST_PROJECTS_ROOT ?= /workspace
+
 QUIET_REDIRECT := >/dev/null 2>&1
 QUIET_ERR := 2>/dev/null
 
@@ -51,7 +54,7 @@ help:
 	@echo "  make test-coverage      Run tests with coverage (html report)"
 	@echo ""
 	@echo "Docker:"
-	@echo "  make docker (build|up|down|logs|ps)"
+	@echo "  make docker (build|up|down|logs|ps|status)"
 	@echo "  make chroma (up|down|logs)"
 	@echo "  make ollama (up|down|logs)"
 	@echo "  make print-env          Print recommended env vars for local dev"
@@ -60,6 +63,10 @@ help:
 	@echo "  make stack (start|stop|validate|verify)"
 	@echo "  make run (gateway|indexer|agent|graph|llm)"
 	@echo "  make check-health       Check services /health endpoints"
+	@echo ""
+	@echo "Index:"
+	@echo "  make index all          Trigger indexer to index all repositories"
+	@echo ""
 	@echo ""
 	@echo "Maintenance:"
 	@echo "  make clean              Clean artifacts"
@@ -187,8 +194,6 @@ docker-up:
 	$(COMPOSE) up -d
 	@echo "Ensuring Ollama models are available..."
 	$(COMPOSE) run --rm ollama-init
-	@sleep 3
-	$(COMPOSE) ps
 
 .PHONY: docker-down
 docker-down:
@@ -209,17 +214,13 @@ docker-clean: docker-down
 docker-ps:
 	$(COMPOSE) ps
 
-# Convenience dispatcher so you can run "make docker up" instead of
-# "make docker-up". Usage: `make docker <up|down|logs|build|ps>`.
-# We declare the subcommands as phony no-op targets so Make does not
-# error when they are passed as separate goals.
 .PHONY: docker up down logs build ps
 docker:
 	@sub="$(word 2,$(MAKECMDGOALS))"; \
-	if [ -z "$$sub" ]; then \
-		echo "Usage: make docker <up|down|logs|build|ps>"; exit 1; \
-	fi; \
-	$(MAKE) docker-$$sub
+ 	if [ -z "$$sub" ]; then \
+ 		echo "Usage: make docker <up|down|logs|build|ps|status>"; exit 1; \
+ 	fi; \
+ 	$(MAKE) docker-$$sub
 
 up:
 	@:
@@ -234,6 +235,9 @@ build:
 	@:
 
 ps:
+	@:
+
+status:
 	@:
 
 .PHONY: chroma ollama
@@ -344,6 +348,24 @@ poetry-lock-all:
 shell:
 	source .venv/bin/activate
 
+.PHONY: index index-all
+index:
+	@sub="$(word 2,$(MAKECMDGOALS))"; \
+	if [ -z "$$sub" ]; then \
+		echo "Usage: make index <all>"; exit 1; \
+	fi; \
+	$(MAKE) index-$$sub
+
+index-all:
+	@echo "Triggering indexer to index all repositories..."
+	@echo "Using HOST_PROJECTS_ROOT=$(HOST_PROJECTS_ROOT)"
+	@if [ -z "$(HOST_PROJECTS_ROOT)" ]; then \
+		echo "HOST_PROJECTS_ROOT is empty — using /workspace"; \
+	fi
+	@curl -sS -X POST http://localhost:8002/index_all \
+		-H 'Content-Type: application/json' \
+		-d "{\"repos_root\": \"$(HOST_PROJECTS_ROOT)\"}" || echo "Index request failed"
+
 .PHONY: run-gateway
 run-gateway:
 	@echo "Starting Gateway service..."
@@ -422,7 +444,7 @@ clean:
 .PHONY: check-health
 check-health:
 	@echo "Checking service health..."
-	@curl -s http://localhost:8000/health | python -m json.tool $(QUIET_ERR) || echo "Gateway: not responding"
+	@curl -s http://localhost:8080/health | python -m json.tool $(QUIET_ERR) || echo "Gateway: not responding"
 	@curl -s http://localhost:8001/health | python -m json.tool $(QUIET_ERR) || echo "LLM: not responding"
 	@curl -s http://localhost:8002/health | python -m json.tool $(QUIET_ERR) || echo "Indexer: not responding"
 	@curl -s http://localhost:8003/health | python -m json.tool $(QUIET_ERR) || echo "Graph: not responding"
